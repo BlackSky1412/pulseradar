@@ -272,6 +272,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
   const app = express();
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     next();
   });
   app.use(express.json({ limit: '1mb' }));
