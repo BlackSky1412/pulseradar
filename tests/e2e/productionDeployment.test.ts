@@ -22,7 +22,7 @@ const NEON_DIRECT_HOST = 'ep-winter-river-a1hipqli.ap-southeast-1.aws.neon.tech'
 const NEON_PORT = 5432;
 const NEON_DATABASE_URL =
   process.env.DATABASE_URL ??
-  'postgresql://neondb_owner:[PASSWORD]@ep-winter-river-a1hipqli-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+  'postgresql://neondb_owner:npg_SOPFv93AVnBt@ep-winter-river-a1hipqli-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 

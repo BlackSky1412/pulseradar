@@ -270,6 +270,10 @@ async function readJsonFileIfExists(filePath: string): Promise<unknown | null> {
 
 export async function createApp(options: CreateAppOptions = {}): Promise<CreatedApp> {
   const app = express();
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    next();
+  });
   app.use(express.json({ limit: '1mb' }));
 
   const dataDir = options.dataDir ?? path.resolve(__dirname, 'data');
@@ -1418,6 +1422,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
     const distPath = path.resolve(__dirname, 'dist');
     if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
       app.use(express.static(distPath));
+      app.all('/api/*', (_req, res) => {
+        res.status(404).json({ ok: false, error: 'Not found' });
+      });
       app.get('*', (_req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
       });
