@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: simple-web-starter-3755
+    name: pulseradar-server
     runtime: node
     plan: free
     region: singapore
