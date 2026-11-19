@@ -1,0 +1,259 @@
+{
+  "entities": {
+    "KeywordRule": {
+      "title": "KeywordRule",
+      "description": "Cấu hình một Trang Web Nguồn kèm danh sách từ khóa / tên user cần theo dõi sự kiện đăng bài hoặc phát live.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID của người dùng sở hữu cấu hình nguồn",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "keyword": {
+          "type": "string",
+          "description": "Danh sách từ khóa hoặc @username trên trang nguồn này (phân tách bằng dấu phẩy)",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "excludedKeywords": {
+          "type": "string",
+          "description": "Các từ khóa loại trừ hoặc tên miền nguồn hiển thị",
+          "minLength": 0,
+          "maxLength": 250
+        },
+        "matchType": {
+          "type": "string",
+          "description": "Loại sự kiện cần bắt: cả hai (contains), chỉ đăng bài (exact), hoặc chỉ phát live (regex)",
+          "enum": ["contains", "exact", "regex"]
+        },
+        "platforms": {
+          "type": "string",
+          "description": "Định danh trang web nguồn (tiktok,youtube,reddit,hackernews,x,custom)",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "webhookServerId": {
+          "type": "string",
+          "description": "ID máy chủ nhận request khi phát hiện đăng bài hoặc phát live",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Trạng thái bật/tắt quét trang nguồn này"
+        },
+        "matchCount": {
+          "type": "number",
+          "description": "Tổng số sự kiện đăng bài / live đã phát hiện từ nguồn này"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Thời gian tạo nguồn"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Thời gian cập nhật nguồn"
+        }
+      },
+      "required": [
+        "ownerId",
+        "keyword",
+        "excludedKeywords",
+        "matchType",
+        "platforms",
+        "webhookServerId",
+        "enabled",
+        "matchCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WebhookServer": {
+      "title": "WebhookServer",
+      "description": "Cấu hình máy chủ đích nhận request HTTP POST khi phát hiện sự kiện đăng bài hoặc phát live.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID của người dùng sở hữu cấu hình máy chủ",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Tên định danh máy chủ xử lý",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "url": {
+          "type": "string",
+          "description": "URL endpoint nhận HTTP POST request",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "format": {
+          "type": "string",
+          "description": "Định dạng request payload gửi đi",
+          "enum": ["json", "discord", "slack", "telegram"]
+        },
+        "secretHeader": {
+          "type": "string",
+          "description": "Secret token dùng để ký HMAC trong header X-PulseBot-Signature",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Trạng thái hoạt động của máy chủ nhận"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Thời gian tạo máy chủ"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Thời gian cập nhật máy chủ"
+        }
+      },
+      "required": [
+        "ownerId",
+        "name",
+        "url",
+        "format",
+        "secretHeader",
+        "enabled",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AlertDetection": {
+      "title": "AlertDetection",
+      "description": "Bản ghi sự kiện đăng bài hoặc phát live từ trang web nguồn và trạng thái gửi request về máy chủ xử lý.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID của người dùng sở hữu cảnh báo",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ruleId": {
+          "type": "string",
+          "description": "ID trang web nguồn đã phát hiện",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "keyword": {
+          "type": "string",
+          "description": "Từ khóa hoặc @username đã khớp (kèm loại sự kiện LIVE/POST)",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "platform": {
+          "type": "string",
+          "description": "Định danh trang web nguồn",
+          "enum": ["reddit", "hackernews", "bluesky", "github"]
+        },
+        "author": {
+          "type": "string",
+          "description": "Tên user / kênh thực hiện đăng bài hoặc phát live",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "title": {
+          "type": "string",
+          "description": "Tiêu đề bài đăng hoặc tiêu đề phiên phát trực tiếp (Livestream)",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "contentSnippet": {
+          "type": "string",
+          "description": "Chi tiết nội dung bài đăng hoặc trạng thái phòng Live",
+          "minLength": 0,
+          "maxLength": 1500
+        },
+        "sourceUrl": {
+          "type": "string",
+          "description": "Đường dẫn tới bài đăng hoặc phòng Live trên trang nguồn",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "webhookServerName": {
+          "type": "string",
+          "description": "Tên máy chủ xử lý đã nhận request",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "webhookStatus": {
+          "type": "string",
+          "description": "Trạng thái gửi request về máy chủ",
+          "enum": ["delivered", "failed", "pending"]
+        },
+        "httpStatusCode": {
+          "type": "number",
+          "description": "Mã phản hồi HTTP từ máy chủ đích"
+        },
+        "latencyMs": {
+          "type": "number",
+          "description": "Độ trễ gửi request tính bằng mili-giây"
+        },
+        "payloadJson": {
+          "type": "string",
+          "description": "Nội dung JSON request đã gửi về máy chủ xử lý",
+          "minLength": 2,
+          "maxLength": 4000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Thời điểm phát hiện sự kiện"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Thời điểm cập nhật trạng thái request"
+        }
+      },
+      "required": [
+        "ownerId",
+        "ruleId",
+        "keyword",
+        "platform",
+        "author",
+        "title",
+        "contentSnippet",
+        "sourceUrl",
+        "webhookServerName",
+        "webhookStatus",
+        "httpStatusCode",
+        "latencyMs",
+        "payloadJson",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/keyword_rules/{ruleId}": {
+      "schema": { "$ref": "#/entities/KeywordRule" },
+      "description": "Lưu trữ các Trang Web Nguồn kèm danh sách từ khóa / @username của từng người dùng."
+    },
+    "/webhook_servers/{serverId}": {
+      "schema": { "$ref": "#/entities/WebhookServer" },
+      "description": "Lưu trữ cấu hình máy chủ nhận request xử lý của từng người dùng."
+    },
+    "/alert_detections/{alertId}": {
+      "schema": { "$ref": "#/entities/AlertDetection" },
+      "description": "Lưu trữ lịch sử phát hiện sự kiện đăng bài / phát live và kết quả gửi request về máy chủ."
+    }
+  }
+}

@@ -1,0 +1,164 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Phase 3: Hardened Global Primitives
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Blueprint: KeywordRule (Source Website + Watchlist of Keywords/Usernames)
+    function isValidKeywordRule(data) {
+      return data.keys().hasAll([
+        'ownerId', 'keyword', 'excludedKeywords', 'matchType',
+        'platforms', 'webhookServerId', 'enabled', 'matchCount',
+        'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId', 'keyword', 'excludedKeywords', 'matchType',
+        'platforms', 'webhookServerId', 'enabled', 'matchCount',
+        'createdAt', 'updatedAt'
+      ]) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.ownerId == request.auth.uid &&
+      data.keyword is string && data.keyword.size() >= 1 && data.keyword.size() <= 400 &&
+      data.excludedKeywords is string && data.excludedKeywords.size() <= 250 &&
+      data.matchType is string && data.matchType.size() <= 20 &&
+      (data.matchType == 'contains' || data.matchType == 'exact' || data.matchType == 'regex') &&
+      data.platforms is string && data.platforms.size() >= 1 && data.platforms.size() <= 120 &&
+      data.webhookServerId is string && data.webhookServerId.size() >= 1 && data.webhookServerId.size() <= 128 &&
+      data.enabled is bool &&
+      data.matchCount is int && data.matchCount >= 0 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: WebhookServer
+    function isValidWebhookServer(data) {
+      return data.keys().hasAll([
+        'ownerId', 'name', 'url', 'format',
+        'secretHeader', 'enabled', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId', 'name', 'url', 'format',
+        'secretHeader', 'enabled', 'createdAt', 'updatedAt'
+      ]) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.ownerId == request.auth.uid &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+      data.url is string && data.url.size() >= 1 && data.url.size() <= 500 &&
+      data.format is string && data.format.size() <= 20 &&
+      (data.format == 'json' || data.format == 'discord' || data.format == 'slack' || data.format == 'telegram') &&
+      data.secretHeader is string && data.secretHeader.size() <= 128 &&
+      data.enabled is bool &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: AlertDetection
+    function isValidAlertDetection(data) {
+      return data.keys().hasAll([
+        'ownerId', 'ruleId', 'keyword', 'platform',
+        'author', 'title', 'contentSnippet', 'sourceUrl',
+        'webhookServerName', 'webhookStatus', 'httpStatusCode',
+        'latencyMs', 'payloadJson', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId', 'ruleId', 'keyword', 'platform',
+        'author', 'title', 'contentSnippet', 'sourceUrl',
+        'webhookServerName', 'webhookStatus', 'httpStatusCode',
+        'latencyMs', 'payloadJson', 'createdAt', 'updatedAt'
+      ]) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.ownerId == request.auth.uid &&
+      data.ruleId is string && data.ruleId.size() >= 1 && data.ruleId.size() <= 128 &&
+      data.keyword is string && data.keyword.size() >= 1 && data.keyword.size() <= 120 &&
+      data.platform is string && data.platform.size() <= 20 &&
+      (data.platform == 'reddit' || data.platform == 'hackernews' || data.platform == 'bluesky' || data.platform == 'github') &&
+      data.author is string && data.author.size() >= 1 && data.author.size() <= 120 &&
+      data.title is string && data.title.size() >= 1 && data.title.size() <= 500 &&
+      data.contentSnippet is string && data.contentSnippet.size() <= 1500 &&
+      data.sourceUrl is string && data.sourceUrl.size() >= 1 && data.sourceUrl.size() <= 600 &&
+      data.webhookServerName is string && data.webhookServerName.size() >= 1 && data.webhookServerName.size() <= 80 &&
+      data.webhookStatus is string && data.webhookStatus.size() <= 20 &&
+      (data.webhookStatus == 'delivered' || data.webhookStatus == 'failed' || data.webhookStatus == 'pending') &&
+      data.httpStatusCode is int && data.httpStatusCode >= 0 && data.httpStatusCode <= 599 &&
+      data.latencyMs is int && data.latencyMs >= 0 && data.latencyMs <= 120000 &&
+      data.payloadJson is string && data.payloadJson.size() >= 2 && data.payloadJson.size() <= 4000 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    match /keyword_rules/{ruleId} {
+      allow get: if isSignedIn() && isValidId(ruleId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(ruleId) && isValidKeywordRule(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isSignedIn() && isValidId(ruleId) && isValidKeywordRule(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['enabled', 'matchCount', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'keyword', 'excludedKeywords', 'matchType', 'platforms',
+            'webhookServerId', 'enabled', 'matchCount', 'updatedAt'
+          ])
+        );
+      allow delete: if isSignedIn() && isValidId(ruleId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /webhook_servers/{serverId} {
+      allow get: if isSignedIn() && isValidId(serverId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(serverId) && isValidWebhookServer(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isSignedIn() && isValidId(serverId) && isValidWebhookServer(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['enabled', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'url', 'format', 'secretHeader', 'enabled', 'updatedAt'
+          ])
+        );
+      allow delete: if isSignedIn() && isValidId(serverId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /alert_detections/{alertId} {
+      allow get: if isSignedIn() && isValidId(alertId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(alertId) && isValidAlertDetection(incoming()) &&
+        incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isSignedIn() && isValidId(alertId) && isValidAlertDetection(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'webhookStatus', 'httpStatusCode', 'latencyMs', 'payloadJson', 'updatedAt'
+        ]);
+      allow delete: if isSignedIn() && isValidId(alertId) && existing().ownerId == request.auth.uid;
+    }
+  }
+}

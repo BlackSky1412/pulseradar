@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Production build output
+build/
+dist/
+
+# Test coverage & reports
+coverage/
+
+# System files & logs
+.DS_Store
+Thumbs.db
+*.log
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Runtime state: Ignore ephemeral device state & temporary files, KEEP pre-configured rules
+data/*.tmp
+data/android-state.json
+!data/workspace-state.json
+
+.agents/
+.aistudio/
+.antigravity/
+.vscode/
+
+nul
+

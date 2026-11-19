@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: simple-web-starter-3755
+    runtime: node
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: npm install --legacy-peer-deps && npm run build
+    startCommand: npm start
+    autoDeployTrigger: commit
+    healthCheckPath: /api/health
+    envVars:
+      - fromGroup: neon-database
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: AUTO_SCAN_ENABLED
+        value: "true"
+      - key: NPM_CONFIG_LEGACY_PEER_DEPS
+        value: "true"
+      - key: GEMINI_API_KEY
+        sync: false

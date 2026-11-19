@@ -1,0 +1,81 @@
+{
+  "rules": [
+    {
+      "id": "rule_tiktok_source",
+      "ownerId": "demo_user",
+      "keyword": "@ebe_m72, @baotran162008, @baochan162008, @quyenquiday, @vitammyn_133, @quynanhtran._, @lytran.1309, @myckuyaa, @embephamandi, @lanvu269, @linhchipham2, @sylviaxoxo__, @_nguyenhongthuong, @natho1199, @thaomy_xinhiu21, @daisytran.__, @anbinh02030708, @jonly_nhieen, @founrin, @dau.do9, @noiynu99, @xuongmaytini, @naneeclothing, @celestranpt, @maimailienn, @babibeo4, @sunny318318, @tiennugovap, @tiennugozap, @hvtl108, @quyenquibaby.naau, @bedau68685, @_hyn1105, @dh.huyenn, @zanggxinh_, @diemiune205, @ttthuyvan._iu, @niegym22tq",
+      "excludedKeywords": "tiktok.com |",
+      "matchType": "regex",
+      "platforms": "reddit",
+      "webhookServerId": "srv_sandbox_local",
+      "enabled": true,
+      "matchCount": 0,
+      "createdAt": "2026-11-18T16:01:07.088417Z",
+      "updatedAt": "2026-11-18T16:01:07.088417Z"
+    },
+    {
+      "id": "rule_instagram_source",
+      "ownerId": "demo_user",
+      "keyword": "@baotran16tui, @panbaozhen16",
+      "excludedKeywords": "instagram.com |",
+      "matchType": "regex",
+      "platforms": "hackernews",
+      "webhookServerId": "srv_sandbox_local",
+      "enabled": true,
+      "matchCount": 0,
+      "createdAt": "2026-11-18T16:01:07.088417Z",
+      "updatedAt": "2026-11-18T16:01:07.088417Z"
+    },
+    {
+      "id": "rule_x_source",
+      "ownerId": "demo_user",
+      "keyword": "@Minalatuinehehe, @Elinaaa2511",
+      "excludedKeywords": "x.com |",
+      "matchType": "regex",
+      "platforms": "bluesky",
+      "webhookServerId": "srv_sandbox_local",
+      "enabled": true,
+      "matchCount": 0,
+      "createdAt": "2026-11-18T16:01:07.088417Z",
+      "updatedAt": "2026-11-18T16:01:07.088417Z"
+    },
+    {
+      "id": "rule_facebook_source",
+      "ownerId": "demo_user",
+      "keyword": "@phanbaotran2k, @luvtint",
+      "excludedKeywords": "facebook.com |",
+      "matchType": "regex",
+      "platforms": "github",
+      "webhookServerId": "srv_sandbox_local",
+      "enabled": true,
+      "matchCount": 0,
+      "createdAt": "2026-11-18T16:01:07.088417Z",
+      "updatedAt": "2026-11-18T16:01:07.088417Z"
+    }
+  ],
+  "servers": [
+    {
+      "id": "srv_sandbox_local",
+      "ownerId": "demo_user",
+      "name": "Máy chủ Sandbox cục bộ (/api/webhook-sandbox)",
+      "url": "/api/webhook-sandbox",
+      "format": "json",
+      "secretHeader": "",
+      "enabled": true,
+      "createdAt": "2026-11-18T16:01:07.088417Z",
+      "updatedAt": "2026-11-18T16:01:07.088417Z"
+    }
+  ],
+  "alerts": [],
+  "scannerSettings": {
+    "cookies": {
+      "tiktok": "",
+      "instagram": "35549176008%3AqufwVmlD4yrdSy%3A25%3AAYk3ocPsH_8xXCPTUAILkWgESsnTysVy1jda3ZhdfA",
+      "facebook": "61555003359619",
+      "x": "b20b74446e59a6ff74ef9983250ee754140927d6"
+    },
+    "pollIntervalSeconds": 30,
+    "deduplicateLive": true
+  },
+  "updatedAt": "2026-11-18T16:02:59.796Z"
+}
