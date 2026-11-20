@@ -3,54 +3,54 @@
     {
       "id": "rule_tiktok_source",
       "ownerId": "demo_user",
-      "keyword": "@ebe_m72, @baotran162008, @baochan162008, @quyenquiday, @vitammyn_133, @quynanhtran._, @lytran.1309, @myckuyaa, @embephamandi, @lanvu269, @linhchipham2, @sylviaxoxo__, @_nguyenhongthuong, @natho1199, @thaomy_xinhiu21, @daisytran.__, @anbinh02030708, @jonly_nhieen, @founrin, @dau.do9, @noiynu99, @xuongmaytini, @naneeclothing, @celestranpt, @maimailienn, @babibeo4, @sunny318318, @tiennugovap, @tiennugozap, @hvtl108, @quyenquibaby.naau, @bedau68685, @_hyn1105, @dh.huyenn, @zanggxinh_, @diemiune205, @ttthuyvan._iu, @niegym22tq",
+      "keyword": "@niegym22tq, @ttthuyvan._iu, @diemiune205, @zanggxinh_, @dh.huyenn, @_hyn1105, @bedau68685, @quyenquibaby.naau, @hvtl108, @tiennugozap, @tiennugovap, @sunny318318, @babibeo4, @maimailienn, @celestranpt, @naneeclothing, @xuongmaytini, @noiynu99, @dau.do9, @founrin, @jonly_nhieen, @anbinh02030708, @daisytran.__, @thaomy_xinhiu21, @natho1199, @_nguyenhongthuong, @sylviaxoxo__, @linhchipham2, @lanvu269, @embephamandi, @myckuyaa, @lytran.1309, @quynanhtran._, @vitammyn_133, @quyenquiday, @baochan162008, @baotran162008, @ebe_m72",
       "excludedKeywords": "tiktok.com |",
-      "matchType": "regex",
+      "matchType": "contains",
       "platforms": "reddit",
       "webhookServerId": "srv_sandbox_local",
       "enabled": true,
       "matchCount": 0,
-      "createdAt": "2026-11-18T16:01:07.088417Z",
-      "updatedAt": "2026-11-18T16:01:07.088417Z"
+      "createdAt": "2026-11-19T00:00:00.000Z",
+      "updatedAt": "2026-11-19T00:00:00.000Z"
     },
     {
       "id": "rule_instagram_source",
       "ownerId": "demo_user",
-      "keyword": "@baotran16tui, @panbaozhen16",
+      "keyword": "@panbaozhen16, @baotran16tui",
       "excludedKeywords": "instagram.com |",
-      "matchType": "regex",
+      "matchType": "contains",
       "platforms": "hackernews",
       "webhookServerId": "srv_sandbox_local",
       "enabled": true,
       "matchCount": 0,
-      "createdAt": "2026-11-18T16:01:07.088417Z",
-      "updatedAt": "2026-11-18T16:01:07.088417Z"
+      "createdAt": "2026-11-19T00:00:00.000Z",
+      "updatedAt": "2026-11-19T00:00:00.000Z"
     },
     {
       "id": "rule_x_source",
       "ownerId": "demo_user",
-      "keyword": "@Minalatuinehehe, @Elinaaa2511",
+      "keyword": "@Elinaaa2511, @Minalatuinehehe",
       "excludedKeywords": "x.com |",
-      "matchType": "regex",
+      "matchType": "contains",
       "platforms": "bluesky",
       "webhookServerId": "srv_sandbox_local",
       "enabled": true,
       "matchCount": 0,
-      "createdAt": "2026-11-18T16:01:07.088417Z",
-      "updatedAt": "2026-11-18T16:01:07.088417Z"
+      "createdAt": "2026-11-19T00:00:00.000Z",
+      "updatedAt": "2026-11-19T00:00:00.000Z"
     },
     {
       "id": "rule_facebook_source",
       "ownerId": "demo_user",
-      "keyword": "@phanbaotran2k, @luvtint",
+      "keyword": "@luvtint, @phanbaotran2k",
       "excludedKeywords": "facebook.com |",
-      "matchType": "regex",
+      "matchType": "contains",
       "platforms": "github",
       "webhookServerId": "srv_sandbox_local",
       "enabled": true,
       "matchCount": 0,
-      "createdAt": "2026-11-18T16:01:07.088417Z",
-      "updatedAt": "2026-11-18T16:01:07.088417Z"
+      "createdAt": "2026-11-19T00:00:00.000Z",
+      "updatedAt": "2026-11-19T00:00:00.000Z"
     }
   ],
   "servers": [
@@ -62,20 +62,53 @@
       "format": "json",
       "secretHeader": "",
       "enabled": true,
-      "createdAt": "2026-11-18T16:01:07.088417Z",
-      "updatedAt": "2026-11-18T16:01:07.088417Z"
+      "createdAt": "2026-11-19T00:00:00.000Z",
+      "updatedAt": "2026-11-19T00:00:00.000Z"
     }
   ],
   "alerts": [],
   "scannerSettings": {
     "cookies": {
-      "tiktok": "",
-      "instagram": "35549176008%3AqufwVmlD4yrdSy%3A25%3AAYk3ocPsH_8xXCPTUAILkWgESsnTysVy1jda3ZhdfA",
-      "facebook": "61555003359619",
-      "x": "b20b74446e59a6ff74ef9983250ee754140927d6"
+      "tiktok": "test_sessionid_123",
+      "instagram": "sessionid=abc; ds_user_id=12345",
+      "facebook": "c_user=100; xs=fb_secret",
+      "x": "auth_token=tok1; ct0=csrf1"
     },
-    "pollIntervalSeconds": 30,
-    "deduplicateLive": true
-  },
-  "updatedAt": "2026-11-18T16:02:59.796Z"
+    "pollIntervalSeconds": 45,
+    "deduplicateLive": true,
+    "platforms": {
+      "tiktok": {
+        "liveEnabled": true,
+        "postEnabled": true,
+        "storyEnabled": true,
+        "liveIntervalSeconds": 45,
+        "postIntervalSeconds": 180,
+        "storyIntervalSeconds": 300
+      },
+      "instagram": {
+        "liveEnabled": true,
+        "postEnabled": true,
+        "storyEnabled": true,
+        "liveIntervalSeconds": 60,
+        "postIntervalSeconds": 240,
+        "storyIntervalSeconds": 360
+      },
+      "facebook": {
+        "liveEnabled": true,
+        "postEnabled": true,
+        "storyEnabled": true,
+        "liveIntervalSeconds": 60,
+        "postIntervalSeconds": 240,
+        "storyIntervalSeconds": 360
+      },
+      "x": {
+        "liveEnabled": true,
+        "postEnabled": true,
+        "storyEnabled": true,
+        "liveIntervalSeconds": 60,
+        "postIntervalSeconds": 240,
+        "storyIntervalSeconds": 360
+      }
+    }
+  }
 }

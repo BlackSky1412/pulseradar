@@ -1,4 +1,4 @@
-import { BaseCollector } from './collectors/base';
+﻿import { BaseCollector } from './collectors/base';
 import { TikTokLiveCollector } from './collectors/tiktokLive';
 import { TikTokPostCollector } from './collectors/tiktokPost';
 import { TikTokStoryCollector } from './collectors/tiktokStory';
@@ -326,3 +326,4 @@ export class TikTokWatcher {
     });
   }
 }
+

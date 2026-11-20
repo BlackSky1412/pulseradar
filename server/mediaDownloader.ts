@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+﻿import fs from 'node:fs';
 import path from 'node:path';
 import { fetchWithTimeout, safeJsonParse } from './liveCheckers/httpClient';
 import type { TikTokEvent, WatcherEventType } from './watchers/types';
@@ -348,3 +348,4 @@ export class MediaDownloader {
 export function createMediaDownloader(options?: MediaDownloaderOptions): MediaDownloader {
   return new MediaDownloader(options);
 }
+

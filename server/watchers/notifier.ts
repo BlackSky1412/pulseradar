@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from '../liveCheckers/httpClient';
+﻿import { fetchWithTimeout } from '../liveCheckers/httpClient';
 import type {
   NotificationResult,
   PendingDeviceNotification,
@@ -254,3 +254,4 @@ export class Notifier {
     };
   }
 }
+

@@ -1,4 +1,4 @@
-import express from 'express';
+﻿import express from 'express';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -37,6 +37,7 @@ import {
   createDefaultWorkspaceState,
   type StateStore,
   type WorkspaceState,
+  type PendingRecordCommand,
 } from './server/stateStore';
 import {
   createWatcherStateStore,
@@ -862,6 +863,90 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
       });
     }
   });
+
+  // 0d-0. High-Frequency Active Device Polling (Outbound Pull for Real-Time Live Recording Commands)
+  const handleAndroidPoll = async (req: express.Request, res: express.Response) => {
+    try {
+      const explicitDeviceId =
+        typeof req.body?.deviceId === 'string'
+          ? req.body.deviceId.trim()
+          : typeof req.query?.deviceId === 'string'
+          ? (req.query.deviceId as string).trim()
+          : '';
+
+      const existingAndroidState = await stateStore.readAndroidState();
+      const candidateDeviceId =
+        explicitDeviceId || existingAndroidState.device?.deviceId || 'sm_n770f_default';
+
+      const allowedIds = existingAndroidState.allowedDeviceIds || ['sm_n770f_default'];
+      if (
+        allowedIds.length > 0 &&
+        !allowedIds.includes('*') &&
+        !allowedIds.includes(candidateDeviceId)
+      ) {
+        res.status(403).json({ ok: false, error: 'Device not authorized' });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      let deliveredCommands: PendingRecordCommand[] = [];
+      let deliveredNotifications: PendingDeviceNotification[] = [];
+
+      await stateStore.updateAndroidState(draft => {
+        if (draft.device) {
+          draft.device.lastSeenAt = nowIso;
+        }
+
+        if (Array.isArray(draft.pendingRecordCommands) && draft.pendingRecordCommands.length > 0) {
+          deliveredCommands = [...draft.pendingRecordCommands];
+          draft.pendingRecordCommands = [];
+
+          for (const cmd of deliveredCommands) {
+            draft.activeSessions[cmd.canonicalKey] = cmd.streamUrl;
+            draft.recentDispatches.unshift({
+              eventId: cmd.eventId,
+              canonicalKey: cmd.canonicalKey,
+              platform: cmd.platform,
+              username: cmd.username,
+              streamUrl: cmd.streamUrl,
+              callbackUrl: 'ACTIVE_POLL_CLIENT',
+              dispatchedAt: nowIso,
+              ok: true,
+              httpStatus: 200,
+              androidStatus: 'RECORDING_TRIGGERED',
+              error: null,
+              attempts: 1,
+            });
+          }
+          if (draft.recentDispatches.length > 50) {
+            draft.recentDispatches.length = 50;
+          }
+          draft.scannerRuntime.lastDispatchAt = nowIso;
+          draft.scannerRuntime.lastDispatchError = null;
+        }
+
+        if (Array.isArray(draft.pendingNotifications) && draft.pendingNotifications.length > 0) {
+          deliveredNotifications = [...draft.pendingNotifications];
+          draft.pendingNotifications = [];
+        }
+      });
+
+      res.status(200).json({
+        ok: true,
+        serverTime: nowIso,
+        commands: deliveredCommands,
+        notifications: deliveredNotifications,
+      });
+    } catch (error) {
+      res.status(500).json({
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed to poll Android commands',
+      });
+    }
+  };
+
+  app.post('/api/android/poll', handleAndroidPoll);
+  app.get('/api/android/poll', handleAndroidPoll);
 
   // 0d-1. Manual / Programmatic Android Push Notification Dispatch
   app.post('/api/android/notify', async (req, res) => {
@@ -1746,3 +1831,4 @@ if (isMainModule) {
       process.exit(1);
     });
 }
+

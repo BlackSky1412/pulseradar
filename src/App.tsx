@@ -89,6 +89,7 @@ import {
   CookieSettingsModal,
   type LiveScannerSettings,
 } from './components/CookieSettingsModal';
+import { UserAvatar } from './components/UserAvatar';
 
 export type ActiveTab =
   | 'overview'
@@ -1626,7 +1627,7 @@ export default function App() {
               }`}
             >
               <KeyRound className="w-3.5 h-3.5" />
-              Cookie & Chu kỳ ({configuredCookieCount}/4)
+              Chu kỳ & Cookie ({configuredCookieCount > 0 ? `${configuredCookieCount} Cookie` : 'Mặc định ẩn danh'})
             </button>
 
             {serverAutoScanManaged ? (
@@ -2109,10 +2110,10 @@ export default function App() {
                         className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
                           hasPlatformCookie
                             ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                            : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                            : 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
                         }`}
                       >
-                        {hasPlatformCookie ? '🟢 Sẵn sàng' : '🟡 Cần Cookie'}
+                        {hasPlatformCookie ? '🟢 Ưu tiên Cookie' : '🟢 Mặc định Ẩn danh'}
                       </span>
                     </div>
 
@@ -2128,19 +2129,19 @@ export default function App() {
                         <span className="font-mono text-indigo-300">story_id (lưu 48h)</span>
                       </div>
                       <div className="py-1 flex items-center justify-between">
-                        <span>Cookie yêu cầu:</span>
+                        <span>Chế độ quét:</span>
                         <span
                           className={`font-mono font-semibold ${
-                            hasPlatformCookie ? 'text-emerald-400' : 'text-amber-400'
+                            hasPlatformCookie ? 'text-emerald-400' : 'text-indigo-400'
                           }`}
                         >
-                          {hasPlatformCookie ? 'Đã nạp cookie' : 'Chưa nạp cookie'}
+                          {hasPlatformCookie ? 'Đã nạp Cookie' : 'Ẩn danh (Guest)'}
                         </span>
                       </div>
                       <div className="py-1 flex items-center justify-between">
                         <span>Trạng thái Story:</span>
                         <span className="font-mono text-slate-300">
-                          {hasPlatformCookie ? 'Đang theo dõi 24h' : 'Cần sessionid'}
+                          {hasPlatformCookie ? 'Đang theo dõi 24h (Cookie)' : 'Đang theo dõi 24h (Ẩn danh)'}
                         </span>
                       </div>
                     </div>
@@ -2150,10 +2151,6 @@ export default function App() {
                     type="button"
                     disabled={isScanning || activePlatformTargets.length === 0}
                     onClick={() => {
-                      if (!hasPlatformCookie) {
-                        setIsCookieModalOpen(true);
-                        return;
-                      }
                       void runSocialScan({
                         specificRule: activePlatformRule,
                         activityType: 'story',
@@ -2163,9 +2160,7 @@ export default function App() {
                     className="w-full min-h-[36px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-200 bg-amber-950/70 hover:bg-amber-900/70 border border-amber-800/80 rounded-xl transition-colors disabled:opacity-50"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
-                    {hasPlatformCookie
-                      ? `Quét Story ${PLATFORM_BRAND_NAMES[selectedPlatform]}`
-                      : 'Nạp Cookie để quét Story'}
+                    Quét Story {PLATFORM_BRAND_NAMES[selectedPlatform]} ({hasPlatformCookie ? 'Cookie' : 'Ẩn danh'})
                   </button>
                 </div>
               </div>
@@ -2266,6 +2261,71 @@ export default function App() {
                 </div>
               </form>
 
+              {/* Live Channels Highlight Banner (If any target is currently LIVE) */}
+              {activePlatformTargets.some(
+                item => liveStatusMap[`${item.rule.id}::${item.target}`]?.status === 'LIVE'
+              ) && (
+                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-rose-950/60 via-slate-950/80 to-slate-950/90 border border-rose-500/40 space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="relative flex h-2.5 w-2.5">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500"></span>
+                      </span>
+                      <span className="text-xs font-bold text-rose-300 uppercase tracking-wider font-mono">
+                        Kênh Đang Phát Trực Tiếp ({activePlatformLiveCount})
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-mono text-slate-400 hidden sm:inline-block">
+                      Tự động chuyển tiếp đến Android StreamRecorder
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                    {activePlatformTargets
+                      .filter(item => liveStatusMap[`${item.rule.id}::${item.target}`]?.status === 'LIVE')
+                      .map(({ rule, target }) => {
+                        const targetKey = `${rule.id}::${target}`;
+                        const live = liveStatusMap[targetKey];
+                        return (
+                          <div
+                            key={`highlight_${targetKey}`}
+                            className="flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-slate-900/95 border border-rose-500/40 hover:border-rose-400 transition-colors shadow-sm"
+                          >
+                            <UserAvatar
+                              target={target}
+                              platform={selectedPlatform}
+                              isLive={true}
+                              size="sm"
+                            />
+                            <div className="flex flex-col min-w-0">
+                              <span className="font-mono font-bold text-slate-100 text-xs truncate max-w-[140px]">
+                                {target}
+                              </span>
+                              <span className="text-[10px] text-rose-300 truncate max-w-[140px]">
+                                {live?.title || 'Đang phát trực tiếp'}
+                              </span>
+                            </div>
+                            {live?.streamUrl && (
+                              <button
+                                type="button"
+                                onClick={() => handleCopyStreamUrl(targetKey, live.streamUrl!)}
+                                className="p-1 rounded-lg bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-colors shrink-0 ml-1"
+                                title="Sao chép Stream URL"
+                              >
+                                {copiedStreamKey === targetKey ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
               {/* Multi-Stream Watchlist Table */}
               {activePlatformTargets.length === 0 ? (
                 <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl bg-slate-950/40 space-y-2">
@@ -2282,7 +2342,7 @@ export default function App() {
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
                         <tr className="border-b border-slate-800 bg-slate-950/90 text-slate-400 font-semibold">
-                          <th className="py-3 px-4">Mục tiêu (@Username / URL)</th>
+                          <th className="py-3 px-4">Kênh & Avatar (@Username / URL)</th>
                           <th className="py-3 px-3">Luồng kích hoạt</th>
                           <th className="py-3 px-4">Trạng thái Live</th>
                           <th className="py-3 px-3">Trạng thái Post</th>
@@ -2309,33 +2369,50 @@ export default function App() {
                               key={targetKey}
                               className="hover:bg-slate-900/60 transition-colors"
                             >
-                              {/* 1. Target Name & Warmup Badge */}
+                              {/* 1. Target Avatar, Name & Metadata */}
                               <td className="py-3 px-4">
-                                <div className="flex items-center gap-2">
-                                  <span
-                                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono border shrink-0 ${
-                                      isLiveUser
-                                        ? 'bg-indigo-950/70 border-indigo-800/70 text-indigo-300 font-semibold'
-                                        : 'bg-slate-900 border-slate-700 text-slate-400'
-                                    }`}
-                                  >
-                                    {target.startsWith('http')
-                                      ? 'URL'
-                                      : isLiveUser
-                                      ? '@USER'
-                                      : 'TỪ KHÓA'}
-                                  </span>
-                                  <span className="font-mono font-semibold text-slate-100 truncate max-w-[200px]">
-                                    {target}
-                                  </span>
-                                  {meta.warmup && (
-                                    <span
-                                      title="Khởi tạo êm: đã nạp baseline ID vào bộ nhớ"
-                                      className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-950/70 border border-emerald-800/70 text-emerald-300 font-semibold shrink-0"
-                                    >
-                                      Warmup
-                                    </span>
-                                  )}
+                                <div className="flex items-center gap-3">
+                                  <UserAvatar
+                                    target={target}
+                                    platform={selectedPlatform}
+                                    isLive={liveInfo?.status === 'LIVE'}
+                                    size="md"
+                                  />
+                                  <div className="min-w-0 flex flex-col justify-center">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="font-mono font-bold text-slate-100 truncate max-w-[200px] text-xs">
+                                        {target}
+                                      </span>
+                                      {meta.warmup && (
+                                        <span
+                                          title="Khởi tạo êm: đã nạp baseline ID vào bộ nhớ"
+                                          className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-emerald-950/70 border border-emerald-800/70 text-emerald-300 font-semibold shrink-0"
+                                        >
+                                          Warmup
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-400 font-mono truncate">
+                                      <span
+                                        className={`px-1 py-0.2 rounded text-[9px] font-mono border shrink-0 ${
+                                          isLiveUser
+                                            ? 'bg-indigo-950/70 border-indigo-800/70 text-indigo-300'
+                                            : 'bg-slate-900 border-slate-700 text-slate-400'
+                                        }`}
+                                      >
+                                        {target.startsWith('http')
+                                          ? 'URL'
+                                          : isLiveUser
+                                          ? '@USER'
+                                          : 'TỪ KHÓA'}
+                                      </span>
+                                      {liveInfo?.title && (
+                                        <span className="truncate max-w-[180px] text-slate-400" title={liveInfo.title}>
+                                          {liveInfo.title}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
                                 </div>
                               </td>
 
@@ -2432,18 +2509,16 @@ export default function App() {
                               <td className="py-3 px-3 whitespace-nowrap">
                                 {!meta.story ? (
                                   <span className="text-slate-600 font-mono">Tắt</span>
-                                ) : hasPlatformCookie ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-mono rounded-md bg-emerald-950/40 border border-emerald-800/40 text-emerald-300">
-                                    Sẵn sàng · Dedup 48h
-                                  </span>
                                 ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => setIsCookieModalOpen(true)}
-                                    className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-mono rounded-md bg-amber-950/60 border border-amber-700/60 text-amber-300 hover:bg-amber-900/60 transition-colors"
+                                  <span
+                                    className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-mono rounded-md border ${
+                                      hasPlatformCookie
+                                        ? 'bg-emerald-950/40 border-emerald-800/40 text-emerald-300'
+                                        : 'bg-indigo-950/40 border-indigo-800/40 text-indigo-300'
+                                    }`}
                                   >
-                                    Cần Cookie
-                                  </button>
+                                    {hasPlatformCookie ? 'Sẵn sàng · Cookie' : 'Sẵn sàng · Ẩn danh'} · 48h
+                                  </span>
                                 )}
                               </td>
 

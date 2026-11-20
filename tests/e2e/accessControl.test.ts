@@ -1,4 +1,4 @@
-import test from 'node:test';
+﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -167,6 +167,102 @@ test('Notification Queue: /api/android/notify queues notification delivered on /
   assert.equal(secondJson.notifications.length, 0);
 });
 
+test('Active Poll: /api/android/poll delivers pending commands and notifications immediately', async (t) => {
+  const dataDir = createTempDir();
+  t.after(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const { app, stateStore, close } = await createApp({ dataDir });
+  t.after(async () => {
+    await close();
+  });
+
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as { port: number }).port;
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  // 1. Initially empty
+  const poll1 = await fetch(`${baseUrl}/api/android/poll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'sm_n770f_default' }),
+  });
+  assert.equal(poll1.status, 200);
+  const json1 = await poll1.json();
+  assert.equal(json1.ok, true);
+  assert.deepEqual(json1.commands, []);
+  assert.deepEqual(json1.notifications, []);
+
+  // 2. Queue a record command and notification
+  await stateStore.updateAndroidState((draft) => {
+    draft.pendingRecordCommands = [
+      {
+        eventId: 'evt_test_123',
+        canonicalKey: 'TIKTOK::baotran162008',
+        platform: 'TIKTOK',
+        username: 'baotran162008',
+        usernameOrUrl: 'baotran162008',
+        streamUrl: 'https://stream.tiktok.com/live_test.flv',
+        title: 'Bao Tran Live Test',
+        queuedAt: new Date().toISOString(),
+      },
+    ];
+    draft.pendingNotifications = [
+      {
+        id: 'notif_1',
+        type: 'MEDIA_DOWNLOADED',
+        eventType: 'post',
+        platform: 'TIKTOK',
+        username: 'baotran162008',
+        title: 'New Story',
+        itemId: 'story_1',
+        createdAt: new Date().toISOString(),
+      },
+    ];
+  });
+
+  // 3. Unauthorized poll gets 403
+  await stateStore.updateAndroidState((draft) => {
+    draft.allowedDeviceIds = ['sm_n770f_default'];
+  });
+  const unauthPoll = await fetch(`${baseUrl}/api/android/poll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'hacker_phone' }),
+  });
+  assert.equal(unauthPoll.status, 403);
+
+  // 4. Authorized poll gets commands & notifications immediately
+  const poll2 = await fetch(`${baseUrl}/api/android/poll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'sm_n770f_default' }),
+  });
+  assert.equal(poll2.status, 200);
+  const json2 = await poll2.json();
+  assert.equal(json2.ok, true);
+  assert.equal(json2.commands.length, 1);
+  assert.equal(json2.commands[0].username, 'baotran162008');
+  assert.equal(json2.commands[0].streamUrl, 'https://stream.tiktok.com/live_test.flv');
+  assert.equal(json2.notifications.length, 1);
+  assert.equal(json2.notifications[0].itemId, 'story_1');
+
+  // 5. Subsequent poll -> both queues drained
+  const poll3 = await fetch(`${baseUrl}/api/android/poll?deviceId=sm_n770f_default`);
+  assert.equal(poll3.status, 200);
+  const json3 = await poll3.json();
+  assert.equal(json3.commands.length, 0);
+  assert.equal(json3.notifications.length, 0);
+
+  // Active session was set
+  const finalState = await stateStore.readAndroidState();
+  assert.equal(finalState.activeSessions['TIKTOK::baotran162008'], 'https://stream.tiktok.com/live_test.flv');
+});
+
 test('Media API: /api/media/downloaded and /api/media/file stream downloaded files', async (t) => {
   const dataDir = createTempDir();
   const mediaDir = path.join(dataDir, 'downloaded_media');
@@ -214,3 +310,4 @@ test('Media API: /api/media/downloaded and /api/media/file stream downloaded fil
   const notFoundResp = await fetch(`${baseUrl}/api/media/file/streamer_a/posts/non_existent.mp4`);
   assert.equal(notFoundResp.status, 404);
 });
+

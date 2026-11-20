@@ -248,6 +248,11 @@ export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
 
         if (res.status === 'NOT_LIVE') {
           delete draft.activeSessions[job.canonicalKey];
+          if (Array.isArray(draft.pendingRecordCommands)) {
+            draft.pendingRecordCommands = draft.pendingRecordCommands.filter(
+              c => c.canonicalKey !== job.canonicalKey
+            );
+          }
           nextLiveStatusMap[job.canonicalKey] = {
             canonicalKey: job.canonicalKey,
             ruleId: job.rule.id,
@@ -327,6 +332,37 @@ export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
             detectedAt: checkedAt,
           },
         });
+      }
+
+      if (candidates.length > 0) {
+        if (!Array.isArray(draft.pendingRecordCommands)) {
+          draft.pendingRecordCommands = [];
+        }
+        const nowQueuedIso = new Date().toISOString();
+        for (const candidate of candidates) {
+          const alreadyQueued = draft.pendingRecordCommands.some(
+            cmd => cmd.canonicalKey === candidate.canonicalKey && cmd.streamUrl === candidate.streamUrl
+          );
+          if (!alreadyQueued) {
+            draft.pendingRecordCommands.push({
+              eventId: candidate.payload.eventId,
+              canonicalKey: candidate.canonicalKey,
+              platform: candidate.payload.platform,
+              username: candidate.payload.username,
+              usernameOrUrl: candidate.payload.usernameOrUrl,
+              streamUrl: candidate.payload.streamUrl,
+              title: candidate.payload.title,
+              sourceUrl: candidate.payload.sourceUrl,
+              qualityInfo: candidate.payload.qualityInfo,
+              ruleId: candidate.payload.ruleId,
+              detectedAt: candidate.payload.detectedAt,
+              queuedAt: nowQueuedIso,
+            });
+          }
+        }
+        if (draft.pendingRecordCommands.length > 50) {
+          draft.pendingRecordCommands = draft.pendingRecordCommands.slice(-50);
+        }
       }
 
       draft.liveStatusMap = nextLiveStatusMap;

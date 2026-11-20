@@ -1,4 +1,4 @@
-export type WatcherEventType = 'live' | 'post' | 'story';
+﻿export type WatcherEventType = 'live' | 'post' | 'story';
 
 export interface TikTokEvent {
   username: string;
@@ -105,4 +105,5 @@ export interface PendingDeviceNotification {
   fileSize?: number;
   createdAt: string;
 }
+
 

@@ -204,6 +204,64 @@ function extractStreamUrlFromData(data: Record<string, unknown>): ExtractedStrea
   return null;
 }
 
+async function checkViaWebcastInfoByUser(
+  username: string,
+  cookie: string,
+  sourceUrl: string
+): Promise<LiveCheckResult | null> {
+  const url = `https://webcast.tiktok.com/webcast/room/info_by_user/?aid=1988&app_language=vi-VN&browser_language=vi-VN&unique_id=${encodeURIComponent(
+    username
+  )}`;
+  const headers: Record<string, string> = {
+    'User-Agent': DESKTOP_USER_AGENT,
+    Referer: `https://www.tiktok.com/@${username}/live`,
+    Accept: 'application/json, text/plain, */*',
+    'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+  };
+  const cookieHeader = formatTikTokCookie(cookie);
+  if (cookieHeader) headers.Cookie = cookieHeader;
+
+  const resp = await fetchWithTimeout(url, { headers, timeoutMs: 8000 });
+  if (!resp.ok || !resp.text) return null;
+
+  const json = safeJsonParse<Record<string, unknown>>(resp.text);
+  const data = json?.data as Record<string, unknown> | undefined;
+  if (!data || typeof data !== 'object') return null;
+
+  const status = Number(data.status ?? 0);
+  if (status === 2) {
+    const title =
+      (typeof data.title === 'string' && data.title.trim()) || `TikTok Live (@${username})`;
+    const extracted = extractStreamUrlFromData(data);
+    if (extracted) {
+      return {
+        status: 'LIVE',
+        platform: 'TIKTOK',
+        username,
+        title,
+        streamUrl: extracted.url,
+        sourceUrl,
+        qualityInfo: extracted.qualityInfo,
+        method: 'tiktok:webcast/info_by_user',
+        checkedAt: new Date().toISOString(),
+      };
+    }
+  }
+
+  const msg = typeof data.message === 'string' ? data.message.toLowerCase() : '';
+  if (msg.includes('room has finished') || status === 4) {
+    return {
+      status: 'NOT_LIVE',
+      platform: 'TIKTOK',
+      username,
+      sourceUrl,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  return null;
+}
+
 async function fetchFromWebcastRoomInfo(
   roomId: string,
   username: string,
@@ -509,7 +567,15 @@ export async function checkTikTokLive(
 
   const sourceUrl = `https://www.tiktok.com/@${username}/live`;
 
-  // 1. Official api-live/user/room (Desktop UA)
+  // 1. Webcast info_by_user (Unblocked on datacenter/cloud IPs, e.g. Render AWS Singapore)
+  try {
+    const webcastRes = await checkViaWebcastInfoByUser(username, cookie, sourceUrl);
+    if (webcastRes) return webcastRes;
+  } catch {
+    // fallback
+  }
+
+  // 2. Official api-live/user/room (Desktop UA)
   try {
     const desktopRes = await checkViaApiLive(username, cookie, sourceUrl, false);
     if (desktopRes) return desktopRes;

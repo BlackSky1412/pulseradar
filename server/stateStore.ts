@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+﻿import fs from 'node:fs';
 import path from 'node:path';
 import type {
   AlertDetectionItem,
@@ -86,6 +86,21 @@ export interface AndroidScannerRuntime {
   lastDispatchAt: string | null;
 }
 
+export interface PendingRecordCommand {
+  eventId: string;
+  canonicalKey: string;
+  platform: LivePlatform;
+  username: string;
+  usernameOrUrl: string;
+  streamUrl: string;
+  title: string;
+  sourceUrl?: string;
+  qualityInfo?: string;
+  ruleId?: string;
+  detectedAt?: string;
+  queuedAt: string;
+}
+
 export interface AndroidState {
   device: AndroidDeviceState | null;
   reportedUsers: Record<string, AndroidReportedUser>;
@@ -94,6 +109,7 @@ export interface AndroidState {
   scannerRuntime: AndroidScannerRuntime;
   recentDispatches: AndroidDispatchLog[];
   pendingNotifications: PendingDeviceNotification[];
+  pendingRecordCommands: PendingRecordCommand[];
   allowedDeviceIds: string[];
   updatedAt: string;
 }
@@ -150,6 +166,7 @@ export function createDefaultAndroidState(): AndroidState {
     },
     recentDispatches: [],
     pendingNotifications: [],
+    pendingRecordCommands: [],
     allowedDeviceIds: process.env.ALLOWED_DEVICE_IDS
       ? process.env.ALLOWED_DEVICE_IDS.split(',').map(s => s.trim()).filter(Boolean)
       : ['*'],
@@ -231,6 +248,9 @@ function normalizeAndroidState(raw: unknown): AndroidState {
     recentDispatches: Array.isArray(obj.recentDispatches) ? obj.recentDispatches.slice(0, 50) : [],
     pendingNotifications: Array.isArray(obj.pendingNotifications)
       ? obj.pendingNotifications.slice(0, 100)
+      : [],
+    pendingRecordCommands: Array.isArray(obj.pendingRecordCommands)
+      ? obj.pendingRecordCommands.slice(0, 100)
       : [],
     allowedDeviceIds: Array.isArray(obj.allowedDeviceIds)
       ? obj.allowedDeviceIds.filter(id => typeof id === 'string' && id.trim())
@@ -360,6 +380,9 @@ export function createStateStore(dataDir: string): StateStore {
           pendingNotifications: Array.isArray(current.pendingNotifications)
             ? [...current.pendingNotifications]
             : [],
+          pendingRecordCommands: Array.isArray(current.pendingRecordCommands)
+            ? [...current.pendingRecordCommands]
+            : [],
           allowedDeviceIds: Array.isArray(current.allowedDeviceIds)
             ? [...current.allowedDeviceIds]
             : ['sm_n770f_default'],
@@ -381,3 +404,4 @@ export function createStateStore(dataDir: string): StateStore {
     },
   };
 }
+

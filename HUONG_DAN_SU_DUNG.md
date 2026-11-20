@@ -1,8 +1,12 @@
-# HƯỚNG DẪN HỆ THỐNG PULSERADAR CLOUD (RENDER & NEON) & STREAMRECORDER (ANDROID)
+﻿# HƯỚNG DẪN HỆ THỐNG PULSERADAR CLOUD (RENDER & NEON) & STREAMRECORDER (ANDROID)
 
 ## 1. Giới thiệu tổng quan & Kiến trúc mới nhất
 Hệ thống kết hợp giữa **PulseRadar Cloud Server (Node.js/React trên Render + Neon PostgreSQL)** và **StreamRecorder App (Android Kotlin trên điện thoại)**:
 - **Server Cloud quét tự động (Auto-Scan)**: Quét liên tục danh sách các kênh (TikTok, Instagram, Facebook, X) trên Cloud. Chạy hoàn toàn không cần cookie đối với các kênh công khai; chỉ sử dụng cookie khi người dùng cung cấp hoặc cần thiết.
+- **Kéo lệnh chủ động thời gian thực (Active Client Polling mỗi 3 giây)**:
+  - Khắc phục hoàn toàn bài toán chặn NAT mạng di động 4G/5G: Thay vì Server gửi request ngược vào điện thoại (dễ bị tường lửa mạng chặn), điện thoại Android tự chủ động gửi request đi (`POST /api/android/poll`) mỗi 3 giây.
+  - Ngay khi Server quét thấy kênh phát Live, lệnh ghi hình lập tức được chuyển cho điện thoại trong vòng chưa đầy 3 giây để kích hoạt quay video ngay tức thì.
+  - Tải siêu nhẹ (vài chục bytes/lần), không tốn pin, không cần bất kỳ công cụ đường hầm hay phần mềm phụ trợ nào.
 - **Tự động tải Media chất lượng cao về Google Drive**: Khi phát hiện Post mới hoặc Story mới, hệ thống tự động bóc tách URL độ nét cao nhất (không watermark, HD video/ảnh gốc) và tải trực tiếp vào thư mục Google Drive:
   `G:\My Drive\PulseRadar_StreamRecorder_Package\Downloaded_Media\<username>\<posts|stories>\<timestamp>_<id>.<ext>`
 - **Gửi thông báo tức thì về điện thoại**:
@@ -55,6 +59,7 @@ Hệ thống kết hợp giữa **PulseRadar Cloud Server (Node.js/React trên R
 |---|---|---|
 | `/api/health` | `GET` | Kiểm tra tình trạng server, số kênh theo dõi, thiết bị Android |
 | `/api/android/register` | `POST` | Tiếp nhận đăng ký IP từ điện thoại (kiểm tra Device Whitelist) |
+| `/api/android/poll` | `POST / GET` | Điện thoại chủ động kéo lệnh ghi hình Live và thông báo mới (chu kỳ 3s) |
 | `/api/android/sync` | `POST` | Đối chiếu trạng thái và chuyển giao thông báo media mỗi 10 phút |
 | `/api/android/status` | `GET` | Xem thông tin thiết bị Android, IP hiện tại và lịch sử đồng bộ |
 | `/api/android/notify` | `POST` | Phát thông báo chủ động tới điện thoại |
@@ -71,3 +76,4 @@ Hệ thống kết hợp giữa **PulseRadar Cloud Server (Node.js/React trên R
 - **E2E Access Control & Media Downloader**: 7/7 tests PASS (Device whitelist, notify queue, atomic Drive download).
 - **Production Probe**: 5/5 PASS (DNS, Cloudflare Edge HTTPS 200 OK, Nosniff, HSTS, Dynamic API Health, Neon PostgreSQL Port 5432).
 - **Android App Unit Tests**: `testDebugUnitTest` 25/25 tasks SUCCESSFUL.
+
