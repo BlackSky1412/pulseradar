@@ -1,92 +1,73 @@
-# HƯỚNG DẪN HỆ THỐNG ĐỒNG BỘ PULSERADAR (SERVER) & STREAMRECORDER (ANDROID)
+# HƯỚNG DẪN HỆ THỐNG PULSERADAR CLOUD (RENDER & NEON) & STREAMRECORDER (ANDROID)
 
-## 1. Giới thiệu tổng quan
-Hệ thống kết hợp giữa **PulseRadar Server (Node.js/React trên PC)** và **StreamRecorder App (Android Kotlin trên điện thoại)** nhằm tối ưu hóa việc theo dõi và ghi hình livestream tự động:
-- **Server quét tự động (Auto-Scan)**: Quét liên tục danh sách các kênh (TikTok, Instagram, Facebook, X) theo chu kỳ định cấu hình (mặc định 30 giây). Khi phát hiện user lên Live, Server chủ động phát lệnh `POST /record` tới điện thoại.
-- **Android thụ động (Passive Mode)**: Điện thoại tắt toàn bộ việc tự quét API mạng xã hội để tiết kiệm pin và tránh checkpoint/bị khóa tài khoản mạng xã hội. Thay vào đó, app mở một HTTP server nội bộ tại cổng `:8765` để chờ lệnh từ Server.
-- **Dynamic IP Registration**: Điện thoại tự động phát hiện khi đổi mạng Wi-Fi và cập nhật IP của mình về Server (`POST /api/android/register`).
-- **Đối chiếu định kỳ 10 phút (Server-Authoritative Sync)**: Cứ mỗi 10 phút, app Android gửi danh sách kênh và trạng thái hiện tại về Server (`POST /api/android/sync`). Server giữ vai trò chuẩn (Source of Truth), đối chiếu và yêu cầu điện thoại cập nhật danh sách kênh cũng như kích hoạt ghi hình nếu có kênh đang Live mà app chưa ghi.
-
----
-
-## 2. Cấu trúc thư mục gói đóng gói
-```text
-PulseRadar_StreamRecorder_Sync/
-├── APK/
-│   └── StreamRecorder_debug.apk        # File cài đặt ứng dụng Android mới nhất
-├── PulseRadar_Server/                  # Toàn bộ mã nguồn Server & Web UI
-│   ├── server/                         # Module autoScanner, androidClient, reconcile, stateStore
-│   ├── src/                            # Giao diện React/Vite Dashboard
-│   ├── data/                           # Dữ liệu workspace & trạng thái đồng bộ
-│   ├── tests/                          # Bộ test E2E (156 tests)
-│   ├── server.ts                       # Điểm khởi chạy server chính
-│   └── package.json
-├── StreamRecorder_Android/             # Toàn bộ mã nguồn Android (Android Studio / Gradle)
-│   ├── app/src/main/java/              # Mã nguồn Kotlin (Service, HTTP receiver, UI)
-│   ├── build.gradle.kts
-│   └── build_apk.bat
-└── HUONG_DAN_SU_DUNG.md                # Tài liệu hướng dẫn này
-```
+## 1. Giới thiệu tổng quan & Kiến trúc mới nhất
+Hệ thống kết hợp giữa **PulseRadar Cloud Server (Node.js/React trên Render + Neon PostgreSQL)** và **StreamRecorder App (Android Kotlin trên điện thoại)**:
+- **Server Cloud quét tự động (Auto-Scan)**: Quét liên tục danh sách các kênh (TikTok, Instagram, Facebook, X) trên Cloud. Chạy hoàn toàn không cần cookie đối với các kênh công khai; chỉ sử dụng cookie khi người dùng cung cấp hoặc cần thiết.
+- **Tự động tải Media chất lượng cao về Google Drive**: Khi phát hiện Post mới hoặc Story mới, hệ thống tự động bóc tách URL độ nét cao nhất (không watermark, HD video/ảnh gốc) và tải trực tiếp vào thư mục Google Drive:
+  `G:\My Drive\PulseRadar_StreamRecorder_Package\Downloaded_Media\<username>\<posts|stories>\<timestamp>_<id>.<ext>`
+- **Gửi thông báo tức thì về điện thoại**:
+  - Khi có Post/Story mới tải về: Server gửi thông báo (`POST /notify`) và lưu vào hàng đợi đồng bộ (`pendingNotifications`).
+  - Trên điện thoại: Tự động hiển thị Native System Notification (thanh trạng thái Android) báo cho người dùng biết nội dung và tên file vừa tải.
+- **Tự động phát hiện đổi IP / Đổi mạng**:
+  - Khi điện thoại chuyển giữa Wi-Fi ↔ 4G hoặc đổi địa chỉ IP, `NetworkMonitor` phát hiện sự kiện và tự động gửi đăng ký IP mới về Cloud Server (`POST /api/android/register`).
+- **Đồng bộ tự động mỗi 10 phút (10-Minute Periodic Sync)**:
+  - Cứ mỗi 10 phút, app Android tự động gửi `POST /api/android/sync` về Server để đối chiếu trạng thái ghi hình, cập nhật danh sách kênh theo dõi và nhận toàn bộ thông báo mới nhất.
+- **Bảo mật truy cập Server (Device Whitelist / Giới hạn thiết bị)**:
+  - Hỗ trợ giới hạn thiết bị được phép kết nối qua Device ID / Whitelist (`allowedDeviceIds`). Chỉ những thiết bị có trong danh sách được phép đăng ký và nhận lệnh.
+  - Quản lý qua API: `GET /api/security/device-whitelist` và `PUT /api/security/device-whitelist`.
 
 ---
 
-## 3. Hướng dẫn cài đặt & Khởi chạy
+## 2. Thông tin Môi trường Cloud đang hoạt động
 
-### A. Phía Android (Điện thoại)
+| Mục | Thông tin |
+|---|---|
+| **Render Cloud URL** | `https://pulseradar-server.onrender.com` |
+| **API Health Check** | `https://pulseradar-server.onrender.com/api/health` |
+| **Neon PostgreSQL** | `ep-winter-river-a1hipqli-pooler.ap-southeast-1.aws.neon.tech:5432` |
+| **Thư mục Media Drive** | `G:\My Drive\PulseRadar_StreamRecorder_Package\Downloaded_Media` |
+| **File cài đặt APK** | `G:\My Drive\PulseRadar_StreamRecorder_Package\StreamRecorder_debug.apk` |
+
+---
+
+## 3. Cấu hình trên Điện thoại Android
+
 1. **Cài đặt APK**:
-   - Tải file `StreamRecorder_debug.apk` trong thư mục `APK/` vào điện thoại và tiến hành cài đặt.
-   - Hoặc cài đặt trực tiếp từ máy tính qua ADB:
-     ```bash
-     adb install -r APK/StreamRecorder_debug.apk
+   - Tải file `StreamRecorder_debug.apk` từ thư mục Google Drive vào điện thoại và tiến hành cài đặt.
+2. **Nhập URL Server trên App**:
+   - Mở ứng dụng **StreamRecorder**.
+   - Vào mục **Cài đặt (Settings)**.
+   - Tại ô **PulseRadar URL**, nhập:
+     ```text
+     https://pulseradar-server.onrender.com
      ```
-2. **Khởi chạy Service**:
-   - Mở ứng dụng `StreamRecorder`.
-   - Vào Cài đặt để kiểm tra địa chỉ Server PulseRadar (mặc định: `http://192.168.1.10:3000`).
-   - Bật dịch vụ giám sát (Foreground Service). Trên thanh thông báo sẽ hiển thị:
-     `Stream Recorder (Passive) - Lắng nghe lệnh từ PulseRadar cổng :8765`.
-
-### B. Phía Máy tính (PulseRadar Server)
-1. **Yêu cầu môi trường**:
-   - Node.js >= 18.
-2. **Cài đặt thư viện**:
-   ```bash
-   cd PulseRadar_Server
-   npm install
-   ```
-3. **Khởi chạy Server**:
-   ```bash
-   npm run dev
-   ```
-   Server sẽ lắng nghe tại `http://0.0.0.0:3000` (truy cập trình duyệt: `http://localhost:3000` hoặc IP LAN `http://192.168.1.10:3000`).
-4. **Kiểm tra trạng thái kết nối với Android**:
-   - Mở trình duyệt hoặc dùng curl/PowerShell:
-     ```powershell
-     Invoke-RestMethod -Uri "http://localhost:3000/api/android/status"
-     ```
-   - Kết quả trả về sẽ hiển thị thông tin thiết bị Android đang kết nối (`ip: 192.168.1.9`, `port: 8765`, `lastSyncAt`).
+   - Nhấn **Lưu** hoặc **Đồng bộ ngay**.
+3. **Kích hoạt Dịch vụ giám sát (Foreground Service)**:
+   - Nhấn nút **Play / Bật giám sát** trên màn hình chính.
+   - Trạng thái hiển thị: `PASSIVE LISTENER (:8765)` và `SYNC: OK`.
+   - Toàn bộ tác vụ quét Live/Post/Story ngốn pin đã được chuyển lên Cloud; điện thoại chỉ chạy dịch vụ nhận thông báo và ghi hình thụ động khi có lệnh từ Cloud.
 
 ---
 
-## 4. Các cổng & API tương tác chính
+## 4. Các API chính của PulseRadar Cloud
 
-| Thiết bị | Cổng / Endpoint | Mô tả |
+| Endpoint | Method | Chức năng |
 |---|---|---|
-| **Server** (PC) | `:3000` | Giao diện điều khiển Web UI PulseRadar |
-| **Server** (PC) | `POST /api/android/register` | Endpoint tiếp nhận đăng ký IP từ điện thoại |
-| **Server** (PC) | `POST /api/android/sync` | Endpoint tiếp nhận đối chiếu dữ liệu mỗi 10 phút |
-| **Server** (PC) | `GET /api/android/status` | Xem tình trạng thiết bị Android và bộ quét Live |
-| **Android** | `:8765/health` | Kiểm tra trạng thái hoạt động của receiver trên điện thoại |
-| **Android** | `:8765/record` | Endpoint nhận lệnh ghi hình trực tiếp từ Server |
+| `/api/health` | `GET` | Kiểm tra tình trạng server, số kênh theo dõi, thiết bị Android |
+| `/api/android/register` | `POST` | Tiếp nhận đăng ký IP từ điện thoại (kiểm tra Device Whitelist) |
+| `/api/android/sync` | `POST` | Đối chiếu trạng thái và chuyển giao thông báo media mỗi 10 phút |
+| `/api/android/status` | `GET` | Xem thông tin thiết bị Android, IP hiện tại và lịch sử đồng bộ |
+| `/api/android/notify` | `POST` | Phát thông báo chủ động tới điện thoại |
+| `/api/media/downloaded` | `GET` | Danh sách toàn bộ media Post/Story đã tự động tải về |
+| `/api/media/file/:u/:t/:f` | `GET` | Tải hoặc stream trực tiếp file media từ server |
+| `/api/security/device-whitelist` | `GET/PUT` | Quản lý danh sách Device ID được phép truy cập server |
 
 ---
 
-## 5. Chạy kiểm thử tự động (Verification)
-Trong thư mục `PulseRadar_Server`:
-- **Chạy toàn bộ 156 ca kiểm thử E2E (Tiers 1-4 & Invariants)**:
-  ```bash
-  node --import tsx tests/e2e/run.ts
-  ```
-- **Chạy kiểm tra tự động trên thiết bị thật đang kết nối ADB**:
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File tests/e2e/verify-android-device.ps1
-  ```
+## 5. Kết quả kiểm thử & Xác thực chất lượng
+
+- **npm test**: 28/28 tests PASS (Firestore rules, live checkers, multi-platform, android integration).
+- **watcher unit tests**: 18/18 tests PASS (TikTok live, post, story collectors, backoff, fault isolation).
+- **E2E Access Control & Media Downloader**: 7/7 tests PASS (Device whitelist, notify queue, atomic Drive download).
+- **Production Probe**: 5/5 PASS (DNS, Cloudflare Edge HTTPS 200 OK, Nosniff, HSTS, Dynamic API Health, Neon PostgreSQL Port 5432).
+- **Android App Unit Tests**: `testDebugUnitTest` 25/25 tasks SUCCESSFUL.
