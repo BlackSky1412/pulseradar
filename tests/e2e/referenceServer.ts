@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
@@ -10,6 +11,12 @@ import type {
   CanonicalPlatform,
   HealthResponse,
   LiveSimulationInput,
+  PendingRecordCommand,
+  PollAckRequest,
+  PollAckResponse,
+  PollAckResultItem,
+  PollNotification,
+  PollResponse,
   RecordRequest,
   RecordTriggerItem,
   RegisterResponse,
@@ -21,12 +28,33 @@ import type {
   WorkspaceState,
 } from './types.ts';
 
+interface DispatchLogEntry {
+  eventId: string;
+  canonicalKey: string;
+  platform: CanonicalPlatform;
+  username: string;
+  streamUrl: string;
+  callbackUrl: string;
+  dispatchedAt: string;
+  ok: boolean;
+  httpStatus: number | null;
+  androidStatus: string | null;
+  error: string | null;
+  attempts: number;
+}
+
 interface PersistedAndroidState {
   device: AndroidDeviceRecord | null;
   reportedStatuses: Record<string, AndroidUserStatus>;
   lastScanAt: string | null;
   activeLiveCount: number;
   lastDispatchError: string | null;
+  activeSessions: Record<string, string>;
+  pendingRecordCommands: PendingRecordCommand[];
+  pendingNotifications: PollNotification[];
+  recentAckedCommandIds: string[];
+  recentDispatches: DispatchLogEntry[];
+  allowedDeviceIds: string[];
 }
 
 interface SimulatedLiveEntry {
@@ -55,6 +83,7 @@ export interface ReferenceServerOptions {
   pollIntervalMs?: number;
   dispatchTimeoutMs?: number;
   retryDelayMs?: number;
+  commandTtlMs?: number;
   autoScanEnabled?: boolean;
   upstreamCheckerUrl?: string | null;
 }
@@ -282,6 +311,199 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+  return Boolean(val) && typeof val === 'object' && !Array.isArray(val);
+}
+
+class RefValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RefValidationError';
+  }
+}
+
+function normalizeIdArray(raw: unknown, fieldName: string): string[] | null {
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  if (!Array.isArray(raw)) {
+    throw new RefValidationError(`Invalid ${fieldName}: must be an array of strings`);
+  }
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item === 'string') {
+      const trimmed = item.trim();
+      if (trimmed.length > 0) {
+        seen.add(trimmed);
+      }
+    }
+  }
+  return Array.from(seen);
+}
+
+function pruneExpiredByTtl(state: PersistedAndroidState, nowMs: number, ttlMs: number): void {
+  state.pendingRecordCommands = state.pendingRecordCommands.filter((cmd) => {
+    const queuedMs = Date.parse(cmd.queuedAt);
+    if (!Number.isFinite(queuedMs)) return true;
+    return ttlMs === 0 ? nowMs < queuedMs : nowMs - queuedMs <= ttlMs;
+  });
+  state.pendingNotifications = state.pendingNotifications.filter((notif) => {
+    const createdMs = Date.parse(notif.createdAt);
+    if (!Number.isFinite(createdMs)) return true;
+    return ttlMs === 0 ? nowMs < createdMs : nowMs - createdMs <= ttlMs;
+  });
+}
+
+function acknowledgePendingCommands(
+  state: PersistedAndroidState,
+  params: {
+    commandIds?: string[];
+    eventIds?: string[];
+    results?: PollAckResultItem[];
+    nowIso: string;
+    callbackUrl?: string;
+  }
+): { ackedCount: number; alreadyAckedCount: number; remainingPendingCount: number } {
+  const commandIdSet = new Set<string>(params.commandIds ?? []);
+  const eventIdSet = new Set<string>(params.eventIds ?? []);
+  const statusByCommandId = new Map<string, string>();
+  const statusByEventId = new Map<string, string>();
+  const resultPairs: Array<{ commandId: string; eventId: string }> = [];
+
+  if (Array.isArray(params.results)) {
+    for (const item of params.results) {
+      const cId = typeof item.commandId === 'string' ? item.commandId.trim() : '';
+      const eId = typeof item.eventId === 'string' ? item.eventId.trim() : '';
+      const st = typeof item.status === 'string' ? item.status.trim() : '';
+      if (cId) {
+        commandIdSet.add(cId);
+        if (st) statusByCommandId.set(cId, st);
+      }
+      if (eId) {
+        eventIdSet.add(eId);
+        if (st) statusByEventId.set(eId, st);
+      }
+      if (cId || eId) {
+        resultPairs.push({ commandId: cId, eventId: eId });
+      }
+    }
+  }
+
+  const recentAcked = [...state.recentAckedCommandIds];
+  const recentAckedSet = new Set<string>(recentAcked);
+  const remaining: PendingRecordCommand[] = [];
+  const matchedIds = new Set<string>();
+
+  let ackedCount = 0;
+  let alreadyAckedCount = 0;
+
+  for (const cmd of state.pendingRecordCommands) {
+    const cmdId = typeof cmd.commandId === 'string' ? cmd.commandId.trim() : '';
+    const evtId = typeof cmd.eventId === 'string' ? cmd.eventId.trim() : '';
+    const isMatched =
+      (cmdId.length > 0 && commandIdSet.has(cmdId)) ||
+      (evtId.length > 0 && eventIdSet.has(evtId));
+
+    if (!isMatched) {
+      remaining.push(cmd);
+      continue;
+    }
+
+    if (cmdId) matchedIds.add(cmdId);
+    if (evtId) matchedIds.add(evtId);
+
+    const wasAlreadyAcked =
+      (cmdId.length > 0 && recentAckedSet.has(cmdId)) ||
+      (evtId.length > 0 && recentAckedSet.has(evtId));
+
+    if (wasAlreadyAcked) {
+      alreadyAckedCount += 1;
+      continue;
+    }
+
+    ackedCount += 1;
+    state.activeSessions[cmd.canonicalKey] = cmd.streamUrl;
+
+    const reportedStatus =
+      (cmdId && statusByCommandId.get(cmdId)) ||
+      (evtId && statusByEventId.get(evtId)) ||
+      'RECORDING_TRIGGERED';
+
+    state.recentDispatches.unshift({
+      eventId: cmd.eventId,
+      canonicalKey: cmd.canonicalKey,
+      platform: cmd.platform,
+      username: cmd.username,
+      streamUrl: cmd.streamUrl,
+      callbackUrl: params.callbackUrl ?? 'ACTIVE_POLL_ACK',
+      dispatchedAt: params.nowIso,
+      ok: true,
+      httpStatus: 200,
+      androidStatus: reportedStatus,
+      error: null,
+      attempts: Math.max(1, cmd.deliveryAttempts ?? 1),
+    });
+
+    if (cmdId && !recentAckedSet.has(cmdId)) {
+      recentAcked.push(cmdId);
+      recentAckedSet.add(cmdId);
+    }
+    if (evtId && !recentAckedSet.has(evtId)) {
+      recentAcked.push(evtId);
+      recentAckedSet.add(evtId);
+    }
+  }
+
+  const checkedDuplicateIds = new Set<string>();
+  for (const pair of resultPairs) {
+    const cMatched = pair.commandId && matchedIds.has(pair.commandId);
+    const eMatched = pair.eventId && matchedIds.has(pair.eventId);
+    if (!cMatched && !eMatched) {
+      const cDup = pair.commandId && recentAckedSet.has(pair.commandId);
+      const eDup = pair.eventId && recentAckedSet.has(pair.eventId);
+      if (cDup || eDup) {
+        alreadyAckedCount += 1;
+      }
+    }
+    if (pair.commandId) checkedDuplicateIds.add(pair.commandId);
+    if (pair.eventId) checkedDuplicateIds.add(pair.eventId);
+  }
+
+  for (const id of commandIdSet) {
+    if (!matchedIds.has(id) && !checkedDuplicateIds.has(id) && recentAckedSet.has(id)) {
+      alreadyAckedCount += 1;
+      checkedDuplicateIds.add(id);
+    }
+  }
+  for (const id of eventIdSet) {
+    if (!matchedIds.has(id) && !checkedDuplicateIds.has(id) && recentAckedSet.has(id)) {
+      alreadyAckedCount += 1;
+      checkedDuplicateIds.add(id);
+    }
+  }
+
+  state.pendingRecordCommands = remaining;
+  if (state.recentDispatches.length > 50) {
+    state.recentDispatches.length = 50;
+  }
+  state.recentAckedCommandIds = recentAcked.slice(-200);
+  if (ackedCount > 0) {
+    state.lastDispatchError = null;
+  }
+
+  return {
+    ackedCount,
+    alreadyAckedCount,
+    remainingPendingCount: remaining.length,
+  };
+}
+
+function acknowledgeNotifications(state: PersistedAndroidState, notificationIds: string[]): void {
+  if (notificationIds.length === 0) return;
+  const idSet = new Set(notificationIds);
+  state.pendingNotifications = state.pendingNotifications.filter((n) => !idSet.has(n.id));
+}
+
 export class ReferenceContractServer {
   private readonly dataDir: string;
   private readonly workspaceStateFile: string;
@@ -289,6 +511,7 @@ export class ReferenceContractServer {
   private readonly pollIntervalMs: number;
   private readonly dispatchTimeoutMs: number;
   private readonly retryDelayMs: number;
+  private commandTtlMs: number;
   private autoScanEnabled: boolean;
   private upstreamCheckerUrl: string | null;
 
@@ -321,6 +544,7 @@ export class ReferenceContractServer {
     this.pollIntervalMs = options.pollIntervalMs ?? 30_000;
     this.dispatchTimeoutMs = options.dispatchTimeoutMs ?? 5_000;
     this.retryDelayMs = options.retryDelayMs ?? 1_000;
+    this.commandTtlMs = options.commandTtlMs ?? 30 * 60 * 1000;
     this.autoScanEnabled = options.autoScanEnabled ?? true;
     this.upstreamCheckerUrl = options.upstreamCheckerUrl ?? null;
 
@@ -350,6 +574,12 @@ export class ReferenceContractServer {
         lastScanAt: null,
         activeLiveCount: 0,
         lastDispatchError: null,
+        activeSessions: {},
+        pendingRecordCommands: [],
+        pendingNotifications: [],
+        recentAckedCommandIds: [],
+        recentDispatches: [],
+        allowedDeviceIds: ['*'],
       };
     }
     const raw = fs.readFileSync(this.androidStateFile, 'utf8');
@@ -360,6 +590,12 @@ export class ReferenceContractServer {
       lastScanAt: parsed.lastScanAt ?? null,
       activeLiveCount: parsed.activeLiveCount ?? 0,
       lastDispatchError: parsed.lastDispatchError ?? null,
+      activeSessions: parsed.activeSessions ?? {},
+      pendingRecordCommands: Array.isArray(parsed.pendingRecordCommands) ? parsed.pendingRecordCommands : [],
+      pendingNotifications: Array.isArray(parsed.pendingNotifications) ? parsed.pendingNotifications : [],
+      recentAckedCommandIds: Array.isArray(parsed.recentAckedCommandIds) ? parsed.recentAckedCommandIds : [],
+      recentDispatches: Array.isArray(parsed.recentDispatches) ? parsed.recentDispatches : [],
+      allowedDeviceIds: Array.isArray(parsed.allowedDeviceIds) ? parsed.allowedDeviceIds : ['*'],
     };
   }
 
@@ -512,9 +748,9 @@ export class ReferenceContractServer {
     };
   }
 
-  private async dispatchRecordToAndroid(payload: RecordRequest): Promise<void> {
+  private async dispatchRecordToAndroid(payload: RecordRequest & { commandId?: string }): Promise<boolean> {
     const device = this.androidStateCache.device;
-    if (!device) return;
+    if (!device) return false;
 
     const targetUrl = device.callbackUrl || `http://${device.ip}:${device.port}/record`;
     const bodyText = JSON.stringify(payload);
@@ -571,6 +807,7 @@ export class ReferenceContractServer {
       this.androidStateCache.lastDispatchError = result.errorText;
     }
     await this.persistAndroidState();
+    return result.ok;
   }
 
   async runSingleScanCycle(): Promise<void> {
@@ -580,6 +817,10 @@ export class ReferenceContractServer {
 
     const cycle = (async () => {
       const targets = this.deriveAuthoritativeTargets().filter((t) => t.isEnabled);
+      const activeKeys = new Set(targets.map((t) => t.key));
+      this.androidStateCache.pendingRecordCommands = this.androidStateCache.pendingRecordCommands.filter((c) =>
+        activeKeys.has(c.canonicalKey)
+      );
       let activeLiveCount = 0;
 
       for (const item of targets) {
@@ -595,6 +836,10 @@ export class ReferenceContractServer {
 
         if (result.status === 'NOT_LIVE') {
           this.activeLiveSessionMap.delete(sessionKey);
+          delete this.androidStateCache.activeSessions[item.key];
+          this.androidStateCache.pendingRecordCommands = this.androidStateCache.pendingRecordCommands.filter(
+            (c) => c.canonicalKey !== item.key
+          );
           this.serverLiveStatusMap.set(item.key, {
             status: 'IDLE',
             streamUrl: null,
@@ -632,7 +877,9 @@ export class ReferenceContractServer {
 
         const knownAndroidStatus = this.androidStateCache.reportedStatuses[item.key];
         const isAndroidBusy = knownAndroidStatus === 'RECORDING' || knownAndroidStatus === 'UPLOADING';
-        const alreadyDispatched = this.activeLiveSessionMap.has(sessionKey);
+        const alreadyDispatched =
+          this.activeLiveSessionMap.has(sessionKey) ||
+          this.androidStateCache.activeSessions[item.key] !== undefined;
 
         if (alreadyDispatched || isAndroidBusy) {
           continue;
@@ -640,9 +887,47 @@ export class ReferenceContractServer {
 
         this.activeLiveSessionMap.set(sessionKey, result.streamUrl);
 
+        const nowIso = new Date().toISOString();
+        const commandId = `cmd_${crypto.randomUUID()}`;
+        const eventId = `evt_${Date.now()}_${item.username}`;
+        const trimmedStreamUrl = result.streamUrl.trim();
+
+        if (trimmedStreamUrl) {
+          this.androidStateCache.pendingRecordCommands = this.androidStateCache.pendingRecordCommands.filter(
+            (c) => !(c.canonicalKey === item.key && c.streamUrl !== trimmedStreamUrl)
+          );
+          const alreadyQueued = this.androidStateCache.pendingRecordCommands.some(
+            (c) => c.canonicalKey === item.key && c.streamUrl === trimmedStreamUrl
+          );
+          if (!alreadyQueued) {
+            this.androidStateCache.pendingRecordCommands.push({
+              commandId,
+              eventId,
+              canonicalKey: item.key,
+              platform: item.platform,
+              username: item.username,
+              usernameOrUrl: item.usernameOrUrl,
+              streamUrl: trimmedStreamUrl,
+              title: result.title,
+              sourceUrl: result.sourceUrl,
+              qualityInfo: result.qualityInfo,
+              ruleId: item.rule.id,
+              detectedAt: nowIso,
+              queuedAt: nowIso,
+              deliveryAttempts: 0,
+              lastDeliveredAt: null,
+            });
+            if (this.androidStateCache.pendingRecordCommands.length > 50) {
+              this.androidStateCache.pendingRecordCommands =
+                this.androidStateCache.pendingRecordCommands.slice(-50);
+            }
+          }
+        }
+
         if (this.androidStateCache.device) {
-          await this.dispatchRecordToAndroid({
-            eventId: `evt_${Date.now()}_${item.username}`,
+          const pushed = await this.dispatchRecordToAndroid({
+            commandId,
+            eventId,
             platform: item.platform,
             username: item.username,
             usernameOrUrl: item.usernameOrUrl,
@@ -651,8 +936,22 @@ export class ReferenceContractServer {
             sourceUrl: result.sourceUrl,
             qualityInfo: result.qualityInfo,
             ruleId: item.rule.id,
-            detectedAt: new Date().toISOString(),
+            detectedAt: nowIso,
           });
+          if (pushed) {
+            this.androidStateCache.activeSessions[item.key] = result.streamUrl;
+            this.androidStateCache.pendingRecordCommands = this.androidStateCache.pendingRecordCommands.filter(
+              (c) => c.commandId !== commandId && !(c.canonicalKey === item.key && c.streamUrl === trimmedStreamUrl)
+            );
+            if (!this.androidStateCache.recentAckedCommandIds.includes(commandId)) {
+              this.androidStateCache.recentAckedCommandIds.push(commandId);
+            }
+            if (!this.androidStateCache.recentAckedCommandIds.includes(eventId)) {
+              this.androidStateCache.recentAckedCommandIds.push(eventId);
+            }
+            this.androidStateCache.recentAckedCommandIds =
+              this.androidStateCache.recentAckedCommandIds.slice(-200);
+          }
         }
 
         // Also dispatch sandbox webhook if configured to /api/webhook-sandbox
@@ -822,6 +1121,12 @@ export class ReferenceContractServer {
               ? body.deviceId.trim()
               : this.androidStateCache.device?.deviceId || 'sm_n770f_default';
 
+          const allowedIds = this.androidStateCache.allowedDeviceIds;
+          if (allowedIds.length > 0 && !allowedIds.includes('*') && !allowedIds.includes(deviceId)) {
+            sendJson(res, 403, { ok: false, error: 'Device not authorized' });
+            return;
+          }
+
           const now = new Date().toISOString();
           const callbackUrl = `http://${resolvedIp}:${body.port}/record`;
           const nextDevice: AndroidDeviceRecord = {
@@ -856,6 +1161,273 @@ export class ReferenceContractServer {
           return;
         }
 
+        if (method === 'PUT' && pathname === '/api/security/device-whitelist') {
+          const raw = await readRawBody(req);
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            sendJson(res, 400, { ok: false, error: 'Malformed JSON body' });
+            return;
+          }
+          if (!isPlainObject(parsed) || !Array.isArray(parsed.allowedDeviceIds)) {
+            sendJson(res, 400, { ok: false, error: 'allowedDeviceIds must be an array' });
+            return;
+          }
+          this.androidStateCache.allowedDeviceIds = parsed.allowedDeviceIds
+            .map((id) => String(id).trim())
+            .filter(Boolean);
+          await this.persistAndroidState();
+          sendJson(res, 200, { ok: true, allowedDeviceIds: this.androidStateCache.allowedDeviceIds });
+          return;
+        }
+
+        if (method === 'POST' && pathname === '/api/android/notify') {
+          const raw = await readRawBody(req);
+          let parsed: unknown;
+          try {
+            parsed = raw ? JSON.parse(raw) : {};
+          } catch {
+            sendJson(res, 400, { ok: false, error: 'Malformed JSON body' });
+            return;
+          }
+          const body = isPlainObject(parsed) ? parsed : {};
+          const notif: PollNotification = {
+            id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            type: typeof body.type === 'string' ? body.type : 'MEDIA_DOWNLOADED',
+            eventType: typeof body.eventType === 'string' ? body.eventType : 'post',
+            platform: typeof body.platform === 'string' ? body.platform : 'TIKTOK',
+            username: typeof body.username === 'string' ? body.username : '',
+            title: typeof body.title === 'string' ? body.title : 'PulseRadar Notification',
+            itemId: typeof body.itemId === 'string' ? body.itemId : undefined,
+            createdAt: new Date().toISOString(),
+          };
+          this.androidStateCache.pendingNotifications.push(notif);
+          await this.persistAndroidState();
+          sendJson(res, 200, { ok: true, notification: notif });
+          return;
+        }
+
+        if ((method === 'POST' || method === 'GET') && pathname === '/api/android/poll') {
+          let bodyObj: Record<string, unknown> | null = null;
+          if (method === 'POST') {
+            const raw = await readRawBody(req);
+            if (raw.trim().length > 0) {
+              let parsed: unknown;
+              try {
+                parsed = JSON.parse(raw);
+              } catch {
+                sendJson(res, 400, { ok: false, error: 'Malformed JSON body' });
+                return;
+              }
+              if (!isPlainObject(parsed)) {
+                sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+                return;
+              }
+              bodyObj = parsed;
+            }
+          }
+
+          if (
+            bodyObj &&
+            bodyObj.deviceId !== undefined &&
+            bodyObj.deviceId !== null &&
+            typeof bodyObj.deviceId !== 'string'
+          ) {
+            sendJson(res, 400, { ok: false, error: 'Invalid deviceId' });
+            return;
+          }
+
+          let ackedCommandIds: string[] | null = null;
+          let ackedEventIds: string[] | null = null;
+          let ackedNotificationIds: string[] | null = null;
+          if (bodyObj) {
+            try {
+              ackedCommandIds = normalizeIdArray(bodyObj.ackedCommandIds, 'ackedCommandIds');
+              ackedEventIds = normalizeIdArray(bodyObj.ackedEventIds, 'ackedEventIds');
+              ackedNotificationIds = normalizeIdArray(bodyObj.ackedNotificationIds, 'ackedNotificationIds');
+            } catch (err) {
+              sendJson(res, 400, {
+                ok: false,
+                error: err instanceof Error ? err.message : 'Invalid ACK fields',
+              });
+              return;
+            }
+          }
+
+          const explicitDeviceId =
+            typeof bodyObj?.deviceId === 'string'
+              ? bodyObj.deviceId.trim()
+              : (reqUrl.searchParams.get('deviceId') ?? '').trim();
+          const candidateDeviceId =
+            explicitDeviceId || this.androidStateCache.device?.deviceId || 'sm_n770f_default';
+
+          const allowedIds = this.androidStateCache.allowedDeviceIds;
+          if (
+            allowedIds.length > 0 &&
+            !allowedIds.includes('*') &&
+            !allowedIds.includes(candidateDeviceId)
+          ) {
+            sendJson(res, 403, { ok: false, error: 'Device not authorized' });
+            return;
+          }
+
+          const nowMs = Date.now();
+          const nowIso = new Date(nowMs).toISOString();
+          if (this.androidStateCache.device) {
+            this.androidStateCache.device.lastSeenAt = nowIso;
+          }
+
+          if (
+            (ackedCommandIds && ackedCommandIds.length > 0) ||
+            (ackedEventIds && ackedEventIds.length > 0)
+          ) {
+            acknowledgePendingCommands(this.androidStateCache, {
+              commandIds: ackedCommandIds ?? [],
+              eventIds: ackedEventIds ?? [],
+              nowIso,
+              callbackUrl: 'ACTIVE_POLL_PIGGYBACK_ACK',
+            });
+          }
+
+          if (ackedNotificationIds && ackedNotificationIds.length > 0) {
+            acknowledgeNotifications(this.androidStateCache, ackedNotificationIds);
+          }
+
+          pruneExpiredByTtl(this.androidStateCache, nowMs, this.commandTtlMs);
+
+          const deliveredCommands = this.androidStateCache.pendingRecordCommands.map((cmd) => {
+            const nextAttempts = (typeof cmd.deliveryAttempts === 'number' ? cmd.deliveryAttempts : 0) + 1;
+            cmd.deliveryAttempts = nextAttempts;
+            cmd.lastDeliveredAt = nowIso;
+            return { ...cmd };
+          });
+          const deliveredNotifications = this.androidStateCache.pendingNotifications.map((n) => ({ ...n }));
+
+          await this.persistAndroidState();
+          const pollResp: PollResponse = {
+            ok: true,
+            serverTime: nowIso,
+            commands: deliveredCommands,
+            notifications: deliveredNotifications,
+          };
+          sendJson(res, 200, pollResp);
+          return;
+        }
+
+        if (method === 'POST' && pathname === '/api/android/poll/ack') {
+          const raw = await readRawBody(req);
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+            return;
+          }
+          if (!isPlainObject(parsed)) {
+            sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+            return;
+          }
+          const body = parsed as PollAckRequest & Record<string, unknown>;
+          if (
+            body.deviceId !== undefined &&
+            body.deviceId !== null &&
+            typeof body.deviceId !== 'string'
+          ) {
+            sendJson(res, 400, { ok: false, error: 'Invalid deviceId' });
+            return;
+          }
+
+          let commandIds: string[] | null = null;
+          let eventIds: string[] | null = null;
+          let notificationIds: string[] | null = null;
+          try {
+            commandIds = normalizeIdArray(body.commandIds, 'commandIds');
+            eventIds = normalizeIdArray(body.eventIds, 'eventIds');
+            notificationIds = normalizeIdArray(body.notificationIds, 'notificationIds');
+          } catch (err) {
+            sendJson(res, 400, {
+              ok: false,
+              error: err instanceof Error ? err.message : 'Invalid ACK arrays',
+            });
+            return;
+          }
+
+          let parsedResults: PollAckResultItem[] | null = null;
+          if (body.results !== undefined && body.results !== null) {
+            if (!Array.isArray(body.results)) {
+              sendJson(res, 400, { ok: false, error: 'Invalid results: must be an array' });
+              return;
+            }
+            parsedResults = [];
+            for (let i = 0; i < body.results.length; i++) {
+              const entry = body.results[i];
+              if (!isPlainObject(entry)) {
+                sendJson(res, 400, { ok: false, error: `Invalid results[${i}]: must be an object` });
+                return;
+              }
+              parsedResults.push({
+                commandId: typeof entry.commandId === 'string' ? entry.commandId : undefined,
+                eventId: typeof entry.eventId === 'string' ? entry.eventId : undefined,
+                status: typeof entry.status === 'string' ? entry.status : undefined,
+              });
+            }
+          }
+
+          if (
+            commandIds === null &&
+            eventIds === null &&
+            notificationIds === null &&
+            parsedResults === null
+          ) {
+            sendJson(res, 400, {
+              ok: false,
+              error: 'Missing commandIds, eventIds, notificationIds, or results array',
+            });
+            return;
+          }
+
+          const explicitDeviceId = typeof body.deviceId === 'string' ? body.deviceId.trim() : '';
+          const candidateDeviceId =
+            explicitDeviceId || this.androidStateCache.device?.deviceId || 'sm_n770f_default';
+
+          const allowedIds = this.androidStateCache.allowedDeviceIds;
+          if (
+            allowedIds.length > 0 &&
+            !allowedIds.includes('*') &&
+            !allowedIds.includes(candidateDeviceId)
+          ) {
+            sendJson(res, 403, { ok: false, error: 'Device not authorized' });
+            return;
+          }
+
+          const nowIso = new Date().toISOString();
+          if (this.androidStateCache.device) {
+            this.androidStateCache.device.lastSeenAt = nowIso;
+          }
+          const ackResult = acknowledgePendingCommands(this.androidStateCache, {
+            commandIds: commandIds ?? [],
+            eventIds: eventIds ?? [],
+            results: parsedResults ?? [],
+            nowIso,
+            callbackUrl: 'ACTIVE_POLL_ACK',
+          });
+          if (notificationIds && notificationIds.length > 0) {
+            acknowledgeNotifications(this.androidStateCache, notificationIds);
+          }
+
+          await this.persistAndroidState();
+          const ackResp: PollAckResponse = {
+            ok: true,
+            ackedCount: ackResult.ackedCount,
+            alreadyAckedCount: ackResult.alreadyAckedCount,
+            remainingPendingCount: ackResult.remainingPendingCount,
+            serverTime: nowIso,
+          };
+          sendJson(res, 200, ackResp);
+          return;
+        }
+
         if (method === 'POST' && pathname === '/api/android/sync') {
           const raw = await readRawBody(req);
           let parsed: unknown;
@@ -872,6 +1444,35 @@ export class ReferenceContractServer {
           const body = parsed as Record<string, unknown>;
           if (!Array.isArray(body.users)) {
             sendJson(res, 400, { ok: false, error: 'Missing or non-array users field' });
+            return;
+          }
+
+          let ackedCommandIds: string[] | null = null;
+          let ackedEventIds: string[] | null = null;
+          let ackedNotificationIds: string[] | null = null;
+          try {
+            ackedCommandIds = normalizeIdArray(body.ackedCommandIds, 'ackedCommandIds');
+            ackedEventIds = normalizeIdArray(body.ackedEventIds, 'ackedEventIds');
+            ackedNotificationIds = normalizeIdArray(body.ackedNotificationIds, 'ackedNotificationIds');
+          } catch (err) {
+            sendJson(res, 400, {
+              ok: false,
+              error: err instanceof Error ? err.message : 'Invalid ACK fields',
+            });
+            return;
+          }
+
+          const candidateDeviceId =
+            (typeof body.deviceId === 'string' && body.deviceId.trim().length > 0
+              ? body.deviceId.trim()
+              : this.androidStateCache.device?.deviceId) || 'sm_n770f_default';
+          const allowedIds = this.androidStateCache.allowedDeviceIds;
+          if (
+            allowedIds.length > 0 &&
+            !allowedIds.includes('*') &&
+            !allowedIds.includes(candidateDeviceId)
+          ) {
+            sendJson(res, 403, { ok: false, error: 'Device not authorized' });
             return;
           }
 
@@ -907,10 +1508,7 @@ export class ReferenceContractServer {
           }
 
           const now = new Date().toISOString();
-          const deviceId =
-            typeof body.deviceId === 'string' && body.deviceId.trim().length > 0
-              ? body.deviceId.trim()
-              : this.androidStateCache.device?.deviceId || 'sm_n770f_default';
+          const deviceId = candidateDeviceId;
 
           // Map Android reported users by canonical key
           const androidUserMap = new Map<string, AndroidSyncUserInput & { canonicalPlatform: CanonicalPlatform; canonicalUsername: string }>();
@@ -943,6 +1541,22 @@ export class ReferenceContractServer {
             lastSyncAt: now,
           };
           this.androidStateCache.reportedStatuses = reportedStatuses;
+
+          if (
+            (ackedCommandIds && ackedCommandIds.length > 0) ||
+            (ackedEventIds && ackedEventIds.length > 0)
+          ) {
+            acknowledgePendingCommands(this.androidStateCache, {
+              commandIds: ackedCommandIds ?? [],
+              eventIds: ackedEventIds ?? [],
+              nowIso: now,
+              callbackUrl: 'ANDROID_SYNC_PIGGYBACK_ACK',
+            });
+          }
+          if (ackedNotificationIds && ackedNotificationIds.length > 0) {
+            acknowledgeNotifications(this.androidStateCache, ackedNotificationIds);
+          }
+
           await this.persistAndroidState();
 
           const authoritativeTargets = this.deriveAuthoritativeTargets();
@@ -1259,14 +1873,59 @@ export class ReferenceContractServer {
           return;
         }
 
+        if (method === 'GET' && pathname === '/__e2e__/android-state') {
+          sendJson(res, 200, { ok: true, state: this.androidStateCache });
+          return;
+        }
+
+        if (method === 'POST' && pathname === '/__e2e__/seed-pending-command') {
+          const raw = await readRawBody(req);
+          const cmd = JSON.parse(raw) as Partial<PendingRecordCommand>;
+          const platform = normalizePlatform(cmd.platform || 'TIKTOK') ?? 'TIKTOK';
+          const username = canonicalizeUsername(cmd.username || 'testuser', platform);
+          const seeded: PendingRecordCommand = {
+            commandId: cmd.commandId ?? `cmd_${crypto.randomUUID()}`,
+            eventId: cmd.eventId ?? `evt_${Date.now()}_${username}`,
+            canonicalKey: cmd.canonicalKey ?? `${platform}::${username}`,
+            platform,
+            username,
+            usernameOrUrl: cmd.usernameOrUrl ?? `@${username}`,
+            streamUrl: cmd.streamUrl ?? `https://cdn.example/${username}.flv`,
+            title: cmd.title ?? `${username} live`,
+            sourceUrl: cmd.sourceUrl ?? `https://tiktok.com/@${username}/live`,
+            qualityInfo: cmd.qualityInfo ?? 'FLV [origin]',
+            ruleId: cmd.ruleId ?? 'rule_test',
+            detectedAt: cmd.detectedAt ?? new Date().toISOString(),
+            queuedAt: cmd.queuedAt ?? new Date().toISOString(),
+            deliveryAttempts: cmd.deliveryAttempts ?? 0,
+            lastDeliveredAt: cmd.lastDeliveredAt ?? null,
+          };
+          this.androidStateCache.pendingRecordCommands.push(seeded);
+          await this.persistAndroidState();
+          sendJson(res, 200, { ok: true, command: seeded });
+          return;
+        }
+
         if (method === 'POST' && pathname === '/__e2e__/config') {
           const raw = await readRawBody(req);
-          const cfg = JSON.parse(raw) as { upstreamCheckerUrl?: string | null; autoScanEnabled?: boolean };
+          const cfg = JSON.parse(raw) as {
+            upstreamCheckerUrl?: string | null;
+            autoScanEnabled?: boolean;
+            commandTtlMs?: number;
+            allowedDeviceIds?: string[];
+          };
           if (cfg.upstreamCheckerUrl !== undefined) {
             this.upstreamCheckerUrl = cfg.upstreamCheckerUrl;
           }
           if (cfg.autoScanEnabled !== undefined) {
             this.autoScanEnabled = cfg.autoScanEnabled;
+          }
+          if (typeof cfg.commandTtlMs === 'number' && cfg.commandTtlMs >= 0) {
+            this.commandTtlMs = cfg.commandTtlMs;
+          }
+          if (Array.isArray(cfg.allowedDeviceIds)) {
+            this.androidStateCache.allowedDeviceIds = cfg.allowedDeviceIds;
+            await this.persistAndroidState();
           }
           sendJson(res, 200, { ok: true });
           return;

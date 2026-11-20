@@ -90,20 +90,39 @@ export function RuleModal({
   servers,
   defaultPlatform,
 }: RuleModalProps) {
-  const [selectedPlatform, setSelectedPlatform] = useState<SocialPlatform>(
-    defaultPlatform || 'reddit'
+  const initialPlatform: SocialPlatform = editingRule
+    ? ((editingRule.platforms.split(',')[0]?.trim() as SocialPlatform) || 'reddit')
+    : defaultPlatform || 'reddit';
+  const initialMeta = editingRule
+    ? parseSourceMeta(editingRule.excludedKeywords, initialPlatform)
+    : null;
+
+  const [selectedPlatform, setSelectedPlatform] = useState<SocialPlatform>(() => initialPlatform);
+  const [sourceDomain, setSourceDomain] = useState(
+    () => initialMeta?.sourceDomain || SOURCE_DEFAULT_DOMAINS[initialPlatform]
   );
-  const [sourceDomain, setSourceDomain] = useState('tiktok.com');
-  const [targets, setTargets] = useState<string[]>([]);
+  const [targets, setTargets] = useState<string[]>(() =>
+    editingRule ? parseTrackedTargets(editingRule.keyword) : []
+  );
   const [newTargetInput, setNewTargetInput] = useState('');
-  const [excludedTermsInput, setExcludedTermsInput] = useState('');
-  const [webhookServerId, setWebhookServerId] = useState('');
-  const [enabled, setEnabled] = useState(true);
+  const [excludedTermsInput, setExcludedTermsInput] = useState(
+    () => initialMeta?.excludedTerms.join(', ') || ''
+  );
+  const [webhookServerId, setWebhookServerId] = useState(
+    () => editingRule?.webhookServerId || servers[0]?.id || 'srv_sandbox_local'
+  );
+  const [enabled, setEnabled] = useState(() => (editingRule ? editingRule.enabled : true));
 
   // Stream subscriptions
-  const [trackLive, setTrackLive] = useState(true);
-  const [trackPost, setTrackPost] = useState(true);
-  const [trackStory, setTrackStory] = useState(true);
+  const [trackLive, setTrackLive] = useState(() =>
+    editingRule ? editingRule.matchType !== 'exact' : true
+  );
+  const [trackPost, setTrackPost] = useState(() =>
+    editingRule ? editingRule.matchType !== 'regex' : true
+  );
+  const [trackStory, setTrackStory] = useState(() =>
+    editingRule ? editingRule.matchType !== 'regex' && editingRule.matchType !== 'exact' : true
+  );
 
   // First-run warmup toggle
   const [firstRunWarmup, setFirstRunWarmup] = useState(true);
@@ -270,14 +289,14 @@ export function RuleModal({
       aria-modal="true"
       aria-labelledby="rule-modal-title"
     >
-      <div className="bg-[#0D121F] border-t sm:border border-slate-800 rounded-t-2xl sm:rounded-2xl max-w-2xl w-full p-5 sm:p-6 space-y-5 max-h-[92vh] overflow-y-auto text-slate-100 shadow-2xl">
+      <div className="bg-[#0D121F] border-t sm:border border-slate-800 rounded-t-2xl sm:rounded-2xl max-w-2xl w-full p-5 sm:p-6 space-y-5 max-h-[92vh] overflow-y-auto overflow-x-hidden text-slate-100 shadow-2xl">
         {/* Modal Header */}
-        <div className="flex items-center justify-between border-b border-slate-800/80 pb-4">
-          <div className="flex items-start gap-2.5">
-            <div className="p-2 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 mt-0.5">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+          <div className="flex items-start gap-2.5 min-w-0">
+            <div className="p-2 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 mt-0.5 shrink-0">
               <Layers className="w-5 h-5" />
             </div>
-            <div>
+            <div className="min-w-0">
               <h2 id="rule-modal-title" className="text-base font-semibold text-slate-100">
                 {editingRule ? 'Cấu hình Kênh & Luồng Theo Dõi Nền Tảng' : 'Thêm Mục Tiêu & Cấu Hình Luồng Quét Mới'}
               </h2>
@@ -290,7 +309,7 @@ export function RuleModal({
             type="button"
             onClick={onClose}
             aria-label="Đóng hộp thoại cấu hình"
-            className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center text-slate-400 hover:text-slate-100 rounded-lg hover:bg-slate-800 transition-colors shrink-0"
+            className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center text-slate-400 hover:text-slate-100 rounded-lg hover:bg-slate-800 transition-colors shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
@@ -336,7 +355,7 @@ export function RuleModal({
 
           {/* Step 2: Target Handle / URL Input */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
               <label htmlFor="rule-keyword-input" className="text-xs font-semibold text-slate-300">
                 2. Danh sách @Username hoặc URL kênh ({targets.length} mục tiêu)
               </label>
@@ -345,7 +364,7 @@ export function RuleModal({
               </span>
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
               <input
                 id="rule-keyword-input"
                 type="text"
@@ -358,12 +377,12 @@ export function RuleModal({
                   }
                 }}
                 placeholder={`Nhập @username hoặc URL (VD: @mixigaming, https://${sourceDomain}/@...) rồi nhấn Thêm...`}
-                className="flex-1 min-h-[42px] px-3.5 py-2 text-xs sm:text-sm bg-slate-950 border border-slate-700 rounded-xl text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-400"
+                className="min-w-0 flex-1 min-h-[44px] px-3.5 py-2 text-xs sm:text-sm bg-slate-950 border border-slate-700 rounded-xl text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-400"
               />
               <button
                 type="button"
                 onClick={handleAddTarget}
-                className="min-h-[42px] inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 border border-indigo-500 rounded-xl hover:bg-indigo-500 transition-colors whitespace-nowrap shrink-0"
+                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 border border-indigo-500 rounded-xl hover:bg-indigo-500 transition-colors whitespace-nowrap shrink-0"
               >
                 <Plus className="w-3.5 h-3.5" />
                 Thêm vào nguồn
@@ -383,11 +402,11 @@ export function RuleModal({
                       key={t}
                       className="py-1.5 first:pt-0 last:pb-0 flex items-center justify-between gap-2 text-xs"
                     >
-                      <div className="flex items-center gap-2 font-mono">
+                      <div className="flex items-center flex-wrap gap-2 font-mono min-w-0 flex-1">
                         <span
-                          className={
+                          className={`break-all ${
                             isUser ? 'text-indigo-300 font-semibold' : 'text-slate-200 font-medium'
-                          }
+                          }`}
                         >
                           {t}
                         </span>
@@ -399,7 +418,7 @@ export function RuleModal({
                         type="button"
                         onClick={() => handleRemoveTarget(t)}
                         aria-label={`Xóa ${t}`}
-                        className="p-1 text-slate-500 hover:text-rose-400 transition-colors"
+                        className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-800/80 transition-colors shrink-0"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -418,7 +437,7 @@ export function RuleModal({
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               {/* Live Tracking */}
               <label
-                className={`p-3 rounded-xl border cursor-pointer transition-all flex flex-col justify-between space-y-2 ${
+                className={`min-h-[44px] p-3 rounded-xl border cursor-pointer transition-all flex flex-col justify-between space-y-2 ${
                   trackLive
                     ? 'border-rose-500/80 bg-rose-950/20 text-rose-200'
                     : 'border-slate-800 bg-slate-950 text-slate-400 hover:border-slate-700'
@@ -433,7 +452,7 @@ export function RuleModal({
                     type="checkbox"
                     checked={trackLive}
                     onChange={e => setTrackLive(e.target.checked)}
-                    className="rounded border-slate-700 bg-slate-900 text-rose-500 focus:ring-rose-500"
+                    className="w-5 h-5 shrink-0 rounded border-slate-700 bg-slate-900 text-rose-500 focus:ring-rose-500"
                   />
                 </div>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
@@ -443,7 +462,7 @@ export function RuleModal({
 
               {/* Post Tracking */}
               <label
-                className={`p-3 rounded-xl border cursor-pointer transition-all flex flex-col justify-between space-y-2 ${
+                className={`min-h-[44px] p-3 rounded-xl border cursor-pointer transition-all flex flex-col justify-between space-y-2 ${
                   trackPost
                     ? 'border-blue-500/80 bg-blue-950/20 text-blue-200'
                     : 'border-slate-800 bg-slate-950 text-slate-400 hover:border-slate-700'
@@ -458,7 +477,7 @@ export function RuleModal({
                     type="checkbox"
                     checked={trackPost}
                     onChange={e => setTrackPost(e.target.checked)}
-                    className="rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500"
+                    className="w-5 h-5 shrink-0 rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500"
                   />
                 </div>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
@@ -468,7 +487,7 @@ export function RuleModal({
 
               {/* Story Tracking */}
               <label
-                className={`p-3 rounded-xl border cursor-pointer transition-all flex flex-col justify-between space-y-2 ${
+                className={`min-h-[44px] p-3 rounded-xl border cursor-pointer transition-all flex flex-col justify-between space-y-2 ${
                   trackStory
                     ? 'border-amber-500/80 bg-amber-950/20 text-amber-200'
                     : 'border-slate-800 bg-slate-950 text-slate-400 hover:border-slate-700'
@@ -483,7 +502,7 @@ export function RuleModal({
                     type="checkbox"
                     checked={trackStory}
                     onChange={e => setTrackStory(e.target.checked)}
-                    className="rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-amber-500"
+                    className="w-5 h-5 shrink-0 rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-amber-500"
                   />
                 </div>
                 <p className="text-[11px] text-slate-400 leading-relaxed">
@@ -495,12 +514,12 @@ export function RuleModal({
 
           {/* Step 4: First-Run Warmup Toggle */}
           <div className="p-3.5 rounded-xl bg-slate-950/90 border border-slate-800/90 space-y-2">
-            <label className="flex items-start gap-2.5 cursor-pointer">
+            <label className="min-h-[44px] flex items-start gap-2.5 cursor-pointer">
               <input
                 type="checkbox"
                 checked={firstRunWarmup}
                 onChange={e => setFirstRunWarmup(e.target.checked)}
-                className="mt-0.5 rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-emerald-500"
+                className="mt-0.5 w-5 h-5 shrink-0 rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-emerald-500"
               />
               <div className="space-y-0.5">
                 <span className="text-xs font-semibold text-emerald-300 inline-flex items-center gap-1.5">
@@ -527,7 +546,7 @@ export function RuleModal({
                 id="rule-webhook-server"
                 value={webhookServerId}
                 onChange={e => setWebhookServerId(e.target.value)}
-                className="w-full min-h-[42px] px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-xl text-slate-100 focus:outline-none focus:border-indigo-400"
+                className="w-full min-h-[44px] px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-xl text-slate-100 focus:outline-none focus:border-indigo-400"
               >
                 {servers.map(srv => (
                   <option key={srv.id} value={srv.id}>
@@ -551,24 +570,24 @@ export function RuleModal({
                 onChange={e => setExcludedTermsInput(e.target.value)}
                 placeholder="Ví dụ: reup, tuyển dụng, quảng cáo"
                 maxLength={150}
-                className="w-full min-h-[42px] px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-xl text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-400"
+                className="w-full min-h-[44px] px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-xl text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-400"
               />
             </div>
           </div>
 
           {/* Modal Actions */}
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
+          <div className="flex flex-wrap items-center justify-end gap-3 pt-4 border-t border-slate-800">
             <button
               type="button"
               onClick={onClose}
-              className="min-h-[40px] px-4 py-2 text-xs font-medium text-slate-300 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors whitespace-nowrap"
+              className="min-h-[44px] px-4 py-2 text-xs font-medium text-slate-300 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors whitespace-nowrap"
             >
               Hủy
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="min-h-[40px] px-5 py-2 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-500 disabled:opacity-50 transition-colors whitespace-nowrap"
+              className="min-h-[44px] px-5 py-2 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-500 disabled:opacity-50 transition-colors whitespace-nowrap"
             >
               {submitting ? 'Đang lưu...' : editingRule ? 'Lưu cấu hình nguồn' : 'Tạo mục tiêu theo dõi'}
             </button>

@@ -87,6 +87,7 @@ export interface AndroidScannerRuntime {
 }
 
 export interface PendingRecordCommand {
+  commandId?: string;
   eventId: string;
   canonicalKey: string;
   platform: LivePlatform;
@@ -99,6 +100,8 @@ export interface PendingRecordCommand {
   ruleId?: string;
   detectedAt?: string;
   queuedAt: string;
+  deliveryAttempts?: number;
+  lastDeliveredAt?: string | null;
 }
 
 export interface AndroidState {
@@ -110,6 +113,7 @@ export interface AndroidState {
   recentDispatches: AndroidDispatchLog[];
   pendingNotifications: PendingDeviceNotification[];
   pendingRecordCommands: PendingRecordCommand[];
+  recentAckedCommandIds?: string[];
   allowedDeviceIds: string[];
   updatedAt: string;
 }
@@ -167,6 +171,7 @@ export function createDefaultAndroidState(): AndroidState {
     recentDispatches: [],
     pendingNotifications: [],
     pendingRecordCommands: [],
+    recentAckedCommandIds: [],
     allowedDeviceIds: process.env.ALLOWED_DEVICE_IDS
       ? process.env.ALLOWED_DEVICE_IDS.split(',').map(s => s.trim()).filter(Boolean)
       : ['*'],
@@ -214,12 +219,48 @@ function normalizeWorkspaceState(raw: unknown): WorkspaceState {
   };
 }
 
-function normalizeAndroidState(raw: unknown): AndroidState {
+export function normalizeAndroidState(raw: unknown): AndroidState {
   const def = createDefaultAndroidState();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return def;
   }
   const obj = raw as Partial<AndroidState>;
+  const normalizedCommands: PendingRecordCommand[] = Array.isArray(obj.pendingRecordCommands)
+    ? obj.pendingRecordCommands
+        .filter((item): item is PendingRecordCommand => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+        .slice(-100)
+        .map(cmd => {
+          const rawCmdId = typeof cmd.commandId === 'string' ? cmd.commandId.trim() : '';
+          const rawEvtId = typeof cmd.eventId === 'string' ? cmd.eventId.trim() : '';
+          const rawCanonical = typeof cmd.canonicalKey === 'string' ? cmd.canonicalKey.trim() : '';
+          const commandId = rawCmdId || rawEvtId || `cmd_legacy_${rawCanonical || 'unknown'}`;
+          const deliveryAttempts =
+            typeof cmd.deliveryAttempts === 'number' &&
+            Number.isFinite(cmd.deliveryAttempts) &&
+            cmd.deliveryAttempts >= 0
+              ? Math.floor(cmd.deliveryAttempts)
+              : 0;
+          const lastDeliveredAt =
+            typeof cmd.lastDeliveredAt === 'string' && cmd.lastDeliveredAt.trim()
+              ? cmd.lastDeliveredAt.trim()
+              : null;
+
+          return {
+            ...cmd,
+            commandId,
+            deliveryAttempts,
+            lastDeliveredAt,
+          };
+        })
+    : [];
+
+  const normalizedRecentAckedIds: string[] = Array.isArray(obj.recentAckedCommandIds)
+    ? obj.recentAckedCommandIds
+        .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        .map(id => id.trim())
+        .slice(-200)
+    : [];
+
   return {
     device: obj.device && typeof obj.device === 'object' ? obj.device : null,
     reportedUsers:
@@ -249,9 +290,8 @@ function normalizeAndroidState(raw: unknown): AndroidState {
     pendingNotifications: Array.isArray(obj.pendingNotifications)
       ? obj.pendingNotifications.slice(0, 100)
       : [],
-    pendingRecordCommands: Array.isArray(obj.pendingRecordCommands)
-      ? obj.pendingRecordCommands.slice(0, 100)
-      : [],
+    pendingRecordCommands: normalizedCommands,
+    recentAckedCommandIds: normalizedRecentAckedIds,
     allowedDeviceIds: Array.isArray(obj.allowedDeviceIds)
       ? obj.allowedDeviceIds.filter(id => typeof id === 'string' && id.trim())
       : process.env.ALLOWED_DEVICE_IDS
@@ -381,7 +421,10 @@ export function createStateStore(dataDir: string): StateStore {
             ? [...current.pendingNotifications]
             : [],
           pendingRecordCommands: Array.isArray(current.pendingRecordCommands)
-            ? [...current.pendingRecordCommands]
+            ? current.pendingRecordCommands.map(cmd => ({ ...cmd }))
+            : [],
+          recentAckedCommandIds: Array.isArray(current.recentAckedCommandIds)
+            ? [...current.recentAckedCommandIds]
             : [],
           allowedDeviceIds: Array.isArray(current.allowedDeviceIds)
             ? [...current.allowedDeviceIds]

@@ -4,6 +4,7 @@ export interface BaseCollector<TEvent = TikTokEvent> {
   readonly name: string;
   readonly eventType: WatcherEventType;
   fetch(username: string): Promise<TEvent[]>;
+  setCookie?(cookie: string): void;
 }
 
 export function normalizeUsername(input: string): string {

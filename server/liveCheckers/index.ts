@@ -67,6 +67,10 @@ export function extractLiveUsername(
   }
 }
 
+function normalizeCookie(val: unknown): string {
+  return typeof val === 'string' ? val.trim() : '';
+}
+
 export async function checkUserLive(
   usernameOrUrl: string,
   options: {
@@ -80,24 +84,32 @@ export async function checkUserLive(
     options.platform || 'TIKTOK',
     options.sourceDomain || ''
   );
-  const cookies = options.cookies || {};
+  const cookies = (
+    options?.cookies && typeof options.cookies === 'object' ? options.cookies : {}
+  ) as PlatformCookies;
 
   switch (resolvedPlatform) {
     case 'INSTAGRAM':
       return checkInstagramLive(
         usernameOrUrl,
-        cookies.instagram || process.env.INSTAGRAM_COOKIE || ''
+        normalizeCookie(cookies.instagram) || normalizeCookie(process.env.INSTAGRAM_COOKIE)
       );
     case 'FACEBOOK':
       return checkFacebookLive(
         usernameOrUrl,
-        cookies.facebook || process.env.FACEBOOK_COOKIE || ''
+        normalizeCookie(cookies.facebook) || normalizeCookie(process.env.FACEBOOK_COOKIE)
       );
     case 'X':
-      return checkXLive(usernameOrUrl, cookies.x || process.env.X_COOKIE || '');
+      return checkXLive(
+        usernameOrUrl,
+        normalizeCookie(cookies.x) || normalizeCookie(process.env.X_COOKIE)
+      );
     case 'TIKTOK':
     default:
-      return checkTikTokLive(usernameOrUrl, cookies.tiktok || process.env.TIKTOK_COOKIE || '');
+      return checkTikTokLive(
+        usernameOrUrl,
+        normalizeCookie(cookies.tiktok) || normalizeCookie(process.env.TIKTOK_COOKIE)
+      );
   }
 }
 

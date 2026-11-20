@@ -167,7 +167,7 @@ test('Notification Queue: /api/android/notify queues notification delivered on /
   assert.equal(secondJson.notifications.length, 0);
 });
 
-test('Active Poll: /api/android/poll delivers pending commands and notifications immediately', async (t) => {
+test('Active Poll: /api/android/poll is non-destructive until 2-way ACK via /api/android/poll/ack', async (t) => {
   const dataDir = createTempDir();
   t.after(() => {
     fs.rmSync(dataDir, { recursive: true, force: true });
@@ -201,6 +201,7 @@ test('Active Poll: /api/android/poll delivers pending commands and notifications
   await stateStore.updateAndroidState((draft) => {
     draft.pendingRecordCommands = [
       {
+        commandId: 'cmd_test_123',
         eventId: 'evt_test_123',
         canonicalKey: 'TIKTOK::baotran162008',
         platform: 'TIKTOK',
@@ -209,6 +210,8 @@ test('Active Poll: /api/android/poll delivers pending commands and notifications
         streamUrl: 'https://stream.tiktok.com/live_test.flv',
         title: 'Bao Tran Live Test',
         queuedAt: new Date().toISOString(),
+        deliveryAttempts: 0,
+        lastDeliveredAt: null,
       },
     ];
     draft.pendingNotifications = [
@@ -225,7 +228,7 @@ test('Active Poll: /api/android/poll delivers pending commands and notifications
     ];
   });
 
-  // 3. Unauthorized poll gets 403
+  // 3. Unauthorized poll & ack get 403
   await stateStore.updateAndroidState((draft) => {
     draft.allowedDeviceIds = ['sm_n770f_default'];
   });
@@ -236,7 +239,14 @@ test('Active Poll: /api/android/poll delivers pending commands and notifications
   });
   assert.equal(unauthPoll.status, 403);
 
-  // 4. Authorized poll gets commands & notifications immediately
+  const unauthAck = await fetch(`${baseUrl}/api/android/poll/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'hacker_phone', commandIds: ['cmd_test_123'] }),
+  });
+  assert.equal(unauthAck.status, 403);
+
+  // 4. Authorized poll returns command with commandId, deliveryAttempts=1, lastDeliveredAt; activeSessions still unset
   const poll2 = await fetch(`${baseUrl}/api/android/poll`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -246,21 +256,76 @@ test('Active Poll: /api/android/poll delivers pending commands and notifications
   const json2 = await poll2.json();
   assert.equal(json2.ok, true);
   assert.equal(json2.commands.length, 1);
+  const cmdId = String(json2.commands[0].commandId ?? '');
+  assert.match(cmdId, /^cmd_/);
   assert.equal(json2.commands[0].username, 'baotran162008');
   assert.equal(json2.commands[0].streamUrl, 'https://stream.tiktok.com/live_test.flv');
+  assert.equal(json2.commands[0].deliveryAttempts, 1);
+  assert.ok(typeof json2.commands[0].lastDeliveredAt === 'string' && json2.commands[0].lastDeliveredAt.length > 0);
   assert.equal(json2.notifications.length, 1);
   assert.equal(json2.notifications[0].itemId, 'story_1');
 
-  // 5. Subsequent poll -> both queues drained
+  const preAckState = await stateStore.readAndroidState();
+  assert.equal(preAckState.activeSessions['TIKTOK::baotran162008'], undefined);
+
+  // 5. Subsequent un-ACKed poll (GET) re-delivers the same command with deliveryAttempts=2
   const poll3 = await fetch(`${baseUrl}/api/android/poll?deviceId=sm_n770f_default`);
   assert.equal(poll3.status, 200);
   const json3 = await poll3.json();
-  assert.equal(json3.commands.length, 0);
-  assert.equal(json3.notifications.length, 0);
+  assert.equal(json3.commands.length, 1);
+  assert.equal(json3.commands[0].commandId, cmdId);
+  assert.equal(json3.commands[0].deliveryAttempts, 2);
+  assert.equal(json3.notifications.length, 1);
 
-  // Active session was set
+  // 6. Explicit 2-way ACK drains command & notification and records activeSessions
+  const ackResp = await fetch(`${baseUrl}/api/android/poll/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: 'sm_n770f_default',
+      commandIds: [cmdId],
+      notificationIds: ['notif_1'],
+    }),
+  });
+  assert.equal(ackResp.status, 200);
+  const ackJson = await ackResp.json();
+  assert.equal(ackJson.ok, true);
+  assert.equal(ackJson.ackedCount, 1);
+  assert.equal(ackJson.alreadyAckedCount, 0);
+  assert.equal(ackJson.remainingPendingCount, 0);
+
+  // 7. Subsequent poll after ACK returns empty commands and notifications
+  const poll4 = await fetch(`${baseUrl}/api/android/poll?deviceId=sm_n770f_default`);
+  assert.equal(poll4.status, 200);
+  const json4 = await poll4.json();
+  assert.deepEqual(json4.commands, []);
+  assert.deepEqual(json4.notifications, []);
+
+  // Active session was set upon ACK
   const finalState = await stateStore.readAndroidState();
   assert.equal(finalState.activeSessions['TIKTOK::baotran162008'], 'https://stream.tiktok.com/live_test.flv');
+
+  // 8. Re-ACK same commandId is idempotent; invalid body (missing ID arrays) returns 400
+  const reAckResp = await fetch(`${baseUrl}/api/android/poll/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: 'sm_n770f_default',
+      commandIds: [cmdId],
+    }),
+  });
+  assert.equal(reAckResp.status, 200);
+  const reAckJson = await reAckResp.json();
+  assert.equal(reAckJson.ok, true);
+  assert.equal(reAckJson.ackedCount, 0);
+  assert.equal(reAckJson.alreadyAckedCount, 1);
+
+  const invalidAckResp = await fetch(`${baseUrl}/api/android/poll/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'sm_n770f_default' }),
+  });
+  assert.equal(invalidAckResp.status, 400);
 });
 
 test('Media API: /api/media/downloaded and /api/media/file stream downloaded files', async (t) => {

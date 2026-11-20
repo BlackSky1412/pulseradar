@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  checkUserLive,
   detectLivePlatform,
   extractLiveUsername,
   extractTikTokUsername,
@@ -12,6 +13,10 @@ import {
   extractFacebookStreamFromHtml,
   extractXBroadcastIdsFromHtml,
 } from './index';
+import { checkTikTokLive } from './tiktokChecker';
+import { checkInstagramLive } from './instagramChecker';
+import { checkFacebookLive } from './facebookChecker';
+import { checkXLive } from './xChecker';
 import {
   buildWebhookPayload,
   isLiveUserTarget,
@@ -149,4 +154,126 @@ test('scannerEngine helpers identify live user targets and attach streamUrl to w
   assert.equal(payload.activity.streamUrl, 'https://cdn.example/origin.flv');
   assert.equal(payload.activity.qualityInfo, 'FLV [origin]');
   assert.equal(payload.activity.detectionMethod, 'tiktok:api-live(desktop)');
+});
+
+async function withMockFetchAndCleanEnv(
+  fn: (captured: Array<{ url: string; headers: Record<string, string> }>) => Promise<void>
+): Promise<void> {
+  const origFetch = globalThis.fetch;
+  const envKeys = ['TIKTOK_COOKIE', 'INSTAGRAM_COOKIE', 'FACEBOOK_COOKIE', 'X_COOKIE'] as const;
+  const savedEnv: Record<string, string | undefined> = {};
+  for (const key of envKeys) {
+    savedEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+
+  const captured: Array<{ url: string; headers: Record<string, string> }> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const hdrs: Record<string, string> = {};
+    if (init?.headers && typeof init.headers === 'object' && !Array.isArray(init.headers)) {
+      for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+        hdrs[k.toLowerCase()] = String(v);
+      }
+    }
+    captured.push({ url, headers: hdrs });
+
+    if (url.includes('guest/activate.json')) {
+      return new Response(JSON.stringify({ guest_token: 'gt_guest_mock_123' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response('<html><body></body></html>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html' },
+    });
+  }) as typeof fetch;
+
+  try {
+    await fn(captured);
+  } finally {
+    globalThis.fetch = origFetch;
+    for (const key of envKeys) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  }
+}
+
+test('Guest mode: formatInstagramCookie and all 4 liveCheckers handle "", whitespace, null, undefined without exceptions or Cookie headers', async () => {
+  assert.equal(formatInstagramCookie(''), '');
+  assert.equal(formatInstagramCookie('   '), '');
+  assert.equal(formatInstagramCookie(null as unknown as string), '');
+  assert.equal(formatInstagramCookie(undefined as unknown as string), '');
+
+  await withMockFetchAndCleanEnv(async captured => {
+    const cookieCases: Array<{ label: string; value: string }> = [
+      { label: 'empty', value: '' },
+      { label: 'ws', value: '   ' },
+      { label: 'null', value: null as unknown as string },
+      { label: 'undef', value: undefined as unknown as string },
+    ];
+
+    for (const c of cookieCases) {
+      const ttRes = await checkTikTokLive(`tt_guest_${c.label}`, c.value);
+      assert.equal(ttRes.platform, 'TIKTOK');
+      assert.equal(ttRes.status, 'NOT_LIVE');
+
+      const igRes = await checkInstagramLive(`ig_guest_${c.label}`, c.value);
+      assert.equal(igRes.platform, 'INSTAGRAM');
+      assert.equal(igRes.status, 'NOT_LIVE');
+
+      const fbRes = await checkFacebookLive(`fb_guest_${c.label}`, c.value);
+      assert.equal(fbRes.platform, 'FACEBOOK');
+      assert.equal(fbRes.status, 'NOT_LIVE');
+
+      const xRes = await checkXLive(`x_guest_${c.label}`, c.value);
+      assert.equal(xRes.platform, 'X');
+      assert.equal(xRes.status, 'NOT_LIVE');
+    }
+
+    assert.ok(captured.length > 0, 'Expected mocked fetch requests to be recorded');
+    for (const req of captured) {
+      assert.equal(req.headers.cookie, undefined, `Unexpected Cookie header on ${req.url}`);
+      assert.equal(req.headers['x-csrf-token'], undefined, `Unexpected x-csrf-token on ${req.url}`);
+    }
+  });
+});
+
+test('Guest mode: checkUserLive handles mixed empty/whitespace/nullish cookies and does not shadow env fallback with whitespace', async () => {
+  await withMockFetchAndCleanEnv(async captured => {
+    const cookies = {
+      tiktok: '',
+      instagram: '   ',
+      facebook: undefined,
+      x: null as unknown as string,
+    };
+
+    const r1 = await checkUserLive('@tt_guest_idx', { platform: 'TIKTOK', cookies });
+    const r2 = await checkUserLive('@ig_guest_idx', { platform: 'INSTAGRAM', cookies });
+    const r3 = await checkUserLive('@fb_guest_idx', { platform: 'FACEBOOK', cookies });
+    const r4 = await checkUserLive('@x_guest_idx', { platform: 'X', cookies });
+
+    assert.equal(r1.status, 'NOT_LIVE');
+    assert.equal(r2.status, 'NOT_LIVE');
+    assert.equal(r3.status, 'NOT_LIVE');
+    assert.equal(r4.status, 'NOT_LIVE');
+
+    assert.ok(captured.length > 0);
+    for (const req of captured) {
+      assert.equal(req.headers.cookie, undefined, `Unexpected Cookie header on ${req.url}`);
+      assert.equal(req.headers['x-csrf-token'], undefined, `Unexpected x-csrf-token on ${req.url}`);
+    }
+
+    // Verify whitespace does NOT shadow process.env.TIKTOK_COOKIE fallback
+    captured.length = 0;
+    process.env.TIKTOK_COOKIE = 'env_tt_guest_check';
+    await checkUserLive('@tt_env_fallback', {
+      platform: 'TIKTOK',
+      cookies: { tiktok: '   ' },
+    });
+    assert.ok(captured.length > 0);
+    assert.equal(captured[0].headers.cookie, 'sessionid=env_tt_guest_check');
+  });
 });

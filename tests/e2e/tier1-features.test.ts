@@ -24,9 +24,13 @@ import type {
 
 const runRepoBuilds = process.env.E2E_RUN_REPO_BUILDS === '1';
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
+const repoLocalStreamRecorderRoot = path.resolve(repoRoot, 'StreamRecorder_Android');
+const parentStreamRecorderRoot = path.resolve(repoRoot, '..', 'StreamRecorder_Android');
 const streamRecorderRoot =
   process.env.E2E_STREAM_RECORDER_ROOT ??
-  'c:\\Users\\tranm\\Documents\\antigravity\\elegant-einstein\\StreamRecorder';
+  (fs.existsSync(repoLocalStreamRecorderRoot)
+    ? repoLocalStreamRecorderRoot
+    : parentStreamRecorderRoot);
 
 function makeSingleUserWorkspace(platformKey: string, domain: string, keyword: string) {
   const base = buildProduction44WorkspaceState();
@@ -109,7 +113,10 @@ test('T1-F01-03: POST /api/android/register persists android-state.json separate
       const ws = JSON.parse(wsRaw) as { rules: unknown[]; scannerSettings: { cookies: Record<string, string> } };
       const as = JSON.parse(asRaw) as { device: { ip: string; port: number; callbackUrl: string } };
       assert.equal(ws.rules.length, 4);
-      assert.equal(ws.scannerSettings.cookies.instagram, 'test_ig_cookie');
+      assert.equal(ws.scannerSettings.cookies.tiktok, '');
+      assert.equal(ws.scannerSettings.cookies.instagram, '');
+      assert.equal(ws.scannerSettings.cookies.facebook, '');
+      assert.equal(ws.scannerSettings.cookies.x, '');
       assert.equal(as.device.ip, '192.168.1.9');
       assert.equal(as.device.port, 8765);
       assert.equal(as.device.callbackUrl, 'http://192.168.1.9:8765/record');
@@ -1439,10 +1446,12 @@ test('T1-F12-02: Android build parity (runs Gradle assembleDebug when E2E_RUN_RE
   assert.equal(fs.existsSync(path.join(streamRecorderRoot, 'app', 'build.gradle.kts')), true);
 });
 
-test('T1-F12-03: Default Android client configuration matches fixed server 192.168.1.10:3000 and command port 8765', async () => {
-  const defaultPulseRadarUrl = 'http://192.168.1.10:3000';
+test('T1-F12-03: Default Android client configuration matches Render HTTPS server and command port 8765', async () => {
+  const defaultPulseRadarUrl = 'https://pulseradar-server.onrender.com';
   const defaultCommandServerPort = 8765;
-  assert.equal(new URL(defaultPulseRadarUrl).port, '3000');
+  const parsed = new URL(defaultPulseRadarUrl);
+  assert.equal(parsed.protocol, 'https:');
+  assert.equal(parsed.hostname, 'pulseradar-server.onrender.com');
   assert.equal(defaultCommandServerPort, 8765);
 });
 

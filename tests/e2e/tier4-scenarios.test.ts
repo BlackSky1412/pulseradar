@@ -266,7 +266,10 @@ test('T4-05: Process Restart Persistence Across Both Nodes retains 44 users, IP,
     assert.equal(statusAfter.body.device?.lastSyncAt, syncAtBefore);
 
     const wsAfter = await harness.getWorkspaceState();
-    assert.equal(wsAfter.body.state?.scannerSettings.cookies.instagram, 'test_ig_cookie');
+    assert.equal(wsAfter.body.state?.scannerSettings.cookies.tiktok, '');
+    assert.equal(wsAfter.body.state?.scannerSettings.cookies.instagram, '');
+    assert.equal(wsAfter.body.state?.scannerSettings.cookies.facebook, '');
+    assert.equal(wsAfter.body.state?.scannerSettings.cookies.x, '');
 
     // UI PUT /api/workspace-state must not erase Android state
     await harness.putWorkspaceState(initial);

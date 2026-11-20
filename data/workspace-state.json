@@ -69,10 +69,10 @@
   "alerts": [],
   "scannerSettings": {
     "cookies": {
-      "tiktok": "test_sessionid_123",
-      "instagram": "sessionid=abc; ds_user_id=12345",
-      "facebook": "c_user=100; xs=fb_secret",
-      "x": "auth_token=tok1; ct0=csrf1"
+      "tiktok": "",
+      "instagram": "",
+      "facebook": "",
+      "x": ""
     },
     "pollIntervalSeconds": 45,
     "deduplicateLive": true,

@@ -743,4 +743,25 @@ export const INITIAL_KEYWORD_RULES: KeywordRuleItem[] = [
   },
 ];
 
+export interface TargetStreamMeta {
+  live: boolean;
+  post: boolean;
+  story: boolean;
+  warmup: boolean;
+}
+
+export function formatTimestamp(isoString: string): string {
+  try {
+    const d = new Date(isoString);
+    if (Number.isNaN(d.getTime())) return isoString;
+    return d.toLocaleTimeString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return isoString;
+  }
+}
+
 export const INITIAL_ALERT_DETECTIONS: AlertDetectionItem[] = [];

@@ -35,6 +35,7 @@ import {
 import {
   createStateStore,
   createDefaultWorkspaceState,
+  type AndroidState,
   type StateStore,
   type WorkspaceState,
   type PendingRecordCommand,
@@ -101,6 +102,7 @@ export interface CreateAppOptions {
   watcherStateStore?: WatcherStateStore;
   watcher?: TikTokWatcher;
   startWatcher?: boolean;
+  commandTtlMs?: number;
 }
 
 export interface CreatedApp {
@@ -130,6 +132,218 @@ export interface StartedServer extends CreatedApp {
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return Boolean(val) && typeof val === 'object' && !Array.isArray(val);
+}
+
+function normalizeCookieValue(val: unknown): string {
+  return typeof val === 'string' ? val.trim() : '';
+}
+
+class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ValidationError';
+  }
+}
+
+function normalizeIdArray(raw: unknown, fieldName: string): string[] | null {
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  if (!Array.isArray(raw)) {
+    throw new ValidationError(`Invalid ${fieldName}: must be an array of strings`);
+  }
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item === 'string') {
+      const trimmed = item.trim();
+      if (trimmed.length > 0) {
+        seen.add(trimmed);
+      }
+    }
+  }
+  return Array.from(seen);
+}
+
+function pruneExpiredByTtl(draft: AndroidState, nowMs: number, ttlMs: number): void {
+  if (Array.isArray(draft.pendingRecordCommands)) {
+    draft.pendingRecordCommands = draft.pendingRecordCommands.filter(cmd => {
+      const queuedMs = Date.parse(cmd.queuedAt);
+      if (!Number.isFinite(queuedMs)) return true;
+      return ttlMs === 0 ? nowMs < queuedMs : nowMs - queuedMs <= ttlMs;
+    });
+  }
+  if (Array.isArray(draft.pendingNotifications)) {
+    draft.pendingNotifications = draft.pendingNotifications.filter(notif => {
+      const createdMs = Date.parse(notif.createdAt);
+      if (!Number.isFinite(createdMs)) return true;
+      return ttlMs === 0 ? nowMs < createdMs : nowMs - createdMs <= ttlMs;
+    });
+  }
+}
+
+interface AckResultItem {
+  commandId?: string;
+  eventId?: string;
+  status?: string;
+}
+
+function acknowledgePendingCommands(
+  draft: AndroidState,
+  params: {
+    commandIds?: string[];
+    eventIds?: string[];
+    results?: AckResultItem[];
+    nowIso: string;
+    callbackUrl?: string;
+  }
+): { ackedCount: number; alreadyAckedCount: number; remainingPendingCount: number } {
+  const commandIdSet = new Set<string>(params.commandIds ?? []);
+  const eventIdSet = new Set<string>(params.eventIds ?? []);
+  const statusByCommandId = new Map<string, string>();
+  const statusByEventId = new Map<string, string>();
+  const resultPairs: Array<{ commandId: string; eventId: string }> = [];
+
+  if (Array.isArray(params.results)) {
+    for (const item of params.results) {
+      const cId = typeof item.commandId === 'string' ? item.commandId.trim() : '';
+      const eId = typeof item.eventId === 'string' ? item.eventId.trim() : '';
+      const st = typeof item.status === 'string' ? item.status.trim() : '';
+      if (cId) {
+        commandIdSet.add(cId);
+        if (st) statusByCommandId.set(cId, st);
+      }
+      if (eId) {
+        eventIdSet.add(eId);
+        if (st) statusByEventId.set(eId, st);
+      }
+      if (cId || eId) {
+        resultPairs.push({ commandId: cId, eventId: eId });
+      }
+    }
+  }
+
+  const recentAcked = Array.isArray(draft.recentAckedCommandIds)
+    ? [...draft.recentAckedCommandIds]
+    : [];
+  const recentAckedSet = new Set<string>(recentAcked);
+
+  const existingPending = Array.isArray(draft.pendingRecordCommands)
+    ? draft.pendingRecordCommands
+    : [];
+  const remaining: PendingRecordCommand[] = [];
+  const matchedIds = new Set<string>();
+
+  let ackedCount = 0;
+  let alreadyAckedCount = 0;
+
+  for (const cmd of existingPending) {
+    const cmdId = typeof cmd.commandId === 'string' ? cmd.commandId.trim() : '';
+    const evtId = typeof cmd.eventId === 'string' ? cmd.eventId.trim() : '';
+    const isMatched =
+      (cmdId.length > 0 && commandIdSet.has(cmdId)) ||
+      (evtId.length > 0 && eventIdSet.has(evtId));
+
+    if (!isMatched) {
+      remaining.push(cmd);
+      continue;
+    }
+
+    if (cmdId) matchedIds.add(cmdId);
+    if (evtId) matchedIds.add(evtId);
+
+    const wasAlreadyAcked =
+      (cmdId.length > 0 && recentAckedSet.has(cmdId)) ||
+      (evtId.length > 0 && recentAckedSet.has(evtId));
+
+    if (wasAlreadyAcked) {
+      alreadyAckedCount += 1;
+      continue;
+    }
+
+    ackedCount += 1;
+    draft.activeSessions[cmd.canonicalKey] = cmd.streamUrl;
+
+    const reportedStatus =
+      (cmdId && statusByCommandId.get(cmdId)) ||
+      (evtId && statusByEventId.get(evtId)) ||
+      'RECORDING_TRIGGERED';
+
+    draft.recentDispatches.unshift({
+      eventId: cmd.eventId,
+      canonicalKey: cmd.canonicalKey,
+      platform: cmd.platform,
+      username: cmd.username,
+      streamUrl: cmd.streamUrl,
+      callbackUrl: params.callbackUrl ?? 'ACTIVE_POLL_ACK',
+      dispatchedAt: params.nowIso,
+      ok: true,
+      httpStatus: 200,
+      androidStatus: reportedStatus,
+      error: null,
+      attempts: Math.max(1, cmd.deliveryAttempts ?? 1),
+    });
+
+    if (cmdId && !recentAckedSet.has(cmdId)) {
+      recentAcked.push(cmdId);
+      recentAckedSet.add(cmdId);
+    }
+    if (evtId && !recentAckedSet.has(evtId)) {
+      recentAcked.push(evtId);
+      recentAckedSet.add(evtId);
+    }
+  }
+
+  const checkedDuplicateIds = new Set<string>();
+  for (const pair of resultPairs) {
+    const cMatched = pair.commandId && matchedIds.has(pair.commandId);
+    const eMatched = pair.eventId && matchedIds.has(pair.eventId);
+    if (!cMatched && !eMatched) {
+      const cDup = pair.commandId && recentAckedSet.has(pair.commandId);
+      const eDup = pair.eventId && recentAckedSet.has(pair.eventId);
+      if (cDup || eDup) {
+        alreadyAckedCount += 1;
+      }
+    }
+    if (pair.commandId) checkedDuplicateIds.add(pair.commandId);
+    if (pair.eventId) checkedDuplicateIds.add(pair.eventId);
+  }
+
+  for (const id of commandIdSet) {
+    if (!matchedIds.has(id) && !checkedDuplicateIds.has(id) && recentAckedSet.has(id)) {
+      alreadyAckedCount += 1;
+      checkedDuplicateIds.add(id);
+    }
+  }
+  for (const id of eventIdSet) {
+    if (!matchedIds.has(id) && !checkedDuplicateIds.has(id) && recentAckedSet.has(id)) {
+      alreadyAckedCount += 1;
+      checkedDuplicateIds.add(id);
+    }
+  }
+
+  draft.pendingRecordCommands = remaining;
+  if (draft.recentDispatches.length > 50) {
+    draft.recentDispatches.length = 50;
+  }
+  draft.recentAckedCommandIds = recentAcked.slice(-200);
+  if (ackedCount > 0) {
+    draft.scannerRuntime.lastDispatchAt = params.nowIso;
+    draft.scannerRuntime.lastDispatchError = null;
+  }
+
+  return {
+    ackedCount,
+    alreadyAckedCount,
+    remainingPendingCount: remaining.length,
+  };
+}
+
+function acknowledgeNotifications(draft: AndroidState, notificationIds: string[]): void {
+  if (notificationIds.length === 0 || !Array.isArray(draft.pendingNotifications)) {
+    return;
+  }
+  const idSet = new Set(notificationIds);
+  draft.pendingNotifications = draft.pendingNotifications.filter(n => !idSet.has(n.id));
 }
 
 export function extractValidIpv4(rawIp: unknown, remoteAddress?: string): string | null {
@@ -424,6 +638,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
 
   const driveStorageRoot = resolveDriveStorageRoot();
 
+  const commandTtlMs =
+    typeof options.commandTtlMs === 'number' &&
+    Number.isFinite(options.commandTtlMs) &&
+    options.commandTtlMs >= 0
+      ? options.commandTtlMs
+      : 30 * 60 * 1000;
+
   const watcher =
     options.watcher ??
     new TikTokWatcher({
@@ -433,7 +654,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         postIntervalSeconds: 240,
         storyIntervalSeconds: 360,
         enableWarmup: true,
-        tiktokSessionId: options.envCookies?.tiktok,
+        tiktokSessionId: normalizeCookieValue(options.envCookies?.tiktok),
         autoDownloadMedia: true,
         driveStorageRoot,
       },
@@ -463,8 +684,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         .map(u => u.username);
       watcher.setTargetUsers(tikTokUsers);
     }
-    if (initialState?.scannerSettings?.cookies?.tiktok) {
-      watcher.updateConfig({ tiktokSessionId: initialState.scannerSettings.cookies.tiktok });
+    if (typeof initialState?.scannerSettings?.cookies?.tiktok === 'string') {
+      const wsCookie = initialState.scannerSettings.cookies.tiktok.trim();
+      const envCookie = normalizeCookieValue(options.envCookies?.tiktok);
+      watcher.updateConfig({ tiktokSessionId: wsCookie || envCookie });
     }
     const ttPlatforms = (initialState?.scannerSettings as any)?.platforms?.tiktok;
     if (ttPlatforms) {
@@ -653,6 +876,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         return;
       }
 
+      let ackedCommandIds: string[] | null = null;
+      let ackedEventIds: string[] | null = null;
+      let ackedNotificationIds: string[] | null = null;
+      try {
+        ackedCommandIds = normalizeIdArray(req.body.ackedCommandIds, 'ackedCommandIds');
+        ackedEventIds = normalizeIdArray(req.body.ackedEventIds, 'ackedEventIds');
+        ackedNotificationIds = normalizeIdArray(req.body.ackedNotificationIds, 'ackedNotificationIds');
+      } catch (validationErr) {
+        res.status(400).json({
+          ok: false,
+          error: validationErr instanceof Error ? validationErr.message : 'Invalid ACK fields',
+        });
+        return;
+      }
+
       const existingAndroidState = await stateStore.readAndroidState();
       const candidateDeviceId =
         (typeof req.body.deviceId === 'string' ? req.body.deviceId.trim() : '') ||
@@ -830,6 +1068,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           };
         }
         draft.reportedUsers = nextReportedUsers;
+
+        if ((ackedCommandIds && ackedCommandIds.length > 0) || (ackedEventIds && ackedEventIds.length > 0)) {
+          acknowledgePendingCommands(draft, {
+            commandIds: ackedCommandIds ?? [],
+            eventIds: ackedEventIds ?? [],
+            nowIso,
+            callbackUrl: 'ANDROID_SYNC_PIGGYBACK_ACK',
+          });
+        }
+        if (ackedNotificationIds && ackedNotificationIds.length > 0) {
+          acknowledgeNotifications(draft, ackedNotificationIds);
+        }
       });
 
       const ws = await stateStore.readWorkspaceState();
@@ -867,9 +1117,47 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
   // 0d-0. High-Frequency Active Device Polling (Outbound Pull for Real-Time Live Recording Commands)
   const handleAndroidPoll = async (req: express.Request, res: express.Response) => {
     try {
+      const bodyObj = isPlainObject(req.body) ? req.body : null;
+      if (
+        req.method === 'POST' &&
+        req.body !== undefined &&
+        req.body !== null &&
+        !bodyObj
+      ) {
+        res.status(400).json({ ok: false, error: 'Invalid JSON body' });
+        return;
+      }
+
+      if (
+        bodyObj &&
+        bodyObj.deviceId !== undefined &&
+        bodyObj.deviceId !== null &&
+        typeof bodyObj.deviceId !== 'string'
+      ) {
+        res.status(400).json({ ok: false, error: 'Invalid deviceId' });
+        return;
+      }
+
+      let ackedCommandIds: string[] | null = null;
+      let ackedEventIds: string[] | null = null;
+      let ackedNotificationIds: string[] | null = null;
+      if (bodyObj) {
+        try {
+          ackedCommandIds = normalizeIdArray(bodyObj.ackedCommandIds, 'ackedCommandIds');
+          ackedEventIds = normalizeIdArray(bodyObj.ackedEventIds, 'ackedEventIds');
+          ackedNotificationIds = normalizeIdArray(bodyObj.ackedNotificationIds, 'ackedNotificationIds');
+        } catch (validationErr) {
+          res.status(400).json({
+            ok: false,
+            error: validationErr instanceof Error ? validationErr.message : 'Invalid ACK fields',
+          });
+          return;
+        }
+      }
+
       const explicitDeviceId =
-        typeof req.body?.deviceId === 'string'
-          ? req.body.deviceId.trim()
+        typeof bodyObj?.deviceId === 'string'
+          ? bodyObj.deviceId.trim()
           : typeof req.query?.deviceId === 'string'
           ? (req.query.deviceId as string).trim()
           : '';
@@ -888,7 +1176,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         return;
       }
 
-      const nowIso = new Date().toISOString();
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
       let deliveredCommands: PendingRecordCommand[] = [];
       let deliveredNotifications: PendingDeviceNotification[] = [];
 
@@ -897,37 +1186,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           draft.device.lastSeenAt = nowIso;
         }
 
-        if (Array.isArray(draft.pendingRecordCommands) && draft.pendingRecordCommands.length > 0) {
-          deliveredCommands = [...draft.pendingRecordCommands];
-          draft.pendingRecordCommands = [];
+        if ((ackedCommandIds && ackedCommandIds.length > 0) || (ackedEventIds && ackedEventIds.length > 0)) {
+          acknowledgePendingCommands(draft, {
+            commandIds: ackedCommandIds ?? [],
+            eventIds: ackedEventIds ?? [],
+            nowIso,
+            callbackUrl: 'ACTIVE_POLL_PIGGYBACK_ACK',
+          });
+        }
 
-          for (const cmd of deliveredCommands) {
-            draft.activeSessions[cmd.canonicalKey] = cmd.streamUrl;
-            draft.recentDispatches.unshift({
-              eventId: cmd.eventId,
-              canonicalKey: cmd.canonicalKey,
-              platform: cmd.platform,
-              username: cmd.username,
-              streamUrl: cmd.streamUrl,
-              callbackUrl: 'ACTIVE_POLL_CLIENT',
-              dispatchedAt: nowIso,
-              ok: true,
-              httpStatus: 200,
-              androidStatus: 'RECORDING_TRIGGERED',
-              error: null,
-              attempts: 1,
-            });
-          }
-          if (draft.recentDispatches.length > 50) {
-            draft.recentDispatches.length = 50;
-          }
-          draft.scannerRuntime.lastDispatchAt = nowIso;
-          draft.scannerRuntime.lastDispatchError = null;
+        if (ackedNotificationIds && ackedNotificationIds.length > 0) {
+          acknowledgeNotifications(draft, ackedNotificationIds);
+        }
+
+        pruneExpiredByTtl(draft, nowMs, commandTtlMs);
+
+        if (Array.isArray(draft.pendingRecordCommands) && draft.pendingRecordCommands.length > 0) {
+          deliveredCommands = draft.pendingRecordCommands.map(cmd => {
+            const nextAttempts = (typeof cmd.deliveryAttempts === 'number' ? cmd.deliveryAttempts : 0) + 1;
+            cmd.deliveryAttempts = nextAttempts;
+            cmd.lastDeliveredAt = nowIso;
+            return { ...cmd };
+          });
         }
 
         if (Array.isArray(draft.pendingNotifications) && draft.pendingNotifications.length > 0) {
-          deliveredNotifications = [...draft.pendingNotifications];
-          draft.pendingNotifications = [];
+          deliveredNotifications = draft.pendingNotifications.map(n => ({ ...n }));
         }
       });
 
@@ -947,6 +1231,121 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
 
   app.post('/api/android/poll', handleAndroidPoll);
   app.get('/api/android/poll', handleAndroidPoll);
+
+  app.post('/api/android/poll/ack', async (req, res) => {
+    try {
+      if (!isPlainObject(req.body)) {
+        res.status(400).json({ ok: false, error: 'Invalid JSON body' });
+        return;
+      }
+
+      if (
+        req.body.deviceId !== undefined &&
+        req.body.deviceId !== null &&
+        typeof req.body.deviceId !== 'string'
+      ) {
+        res.status(400).json({ ok: false, error: 'Invalid deviceId' });
+        return;
+      }
+
+      let commandIds: string[] | null = null;
+      let eventIds: string[] | null = null;
+      let notificationIds: string[] | null = null;
+      try {
+        commandIds = normalizeIdArray(req.body.commandIds, 'commandIds');
+        eventIds = normalizeIdArray(req.body.eventIds, 'eventIds');
+        notificationIds = normalizeIdArray(req.body.notificationIds, 'notificationIds');
+      } catch (validationErr) {
+        res.status(400).json({
+          ok: false,
+          error: validationErr instanceof Error ? validationErr.message : 'Invalid ACK arrays',
+        });
+        return;
+      }
+
+      let parsedResults: AckResultItem[] | null = null;
+      if (req.body.results !== undefined && req.body.results !== null) {
+        if (!Array.isArray(req.body.results)) {
+          res.status(400).json({ ok: false, error: 'Invalid results: must be an array' });
+          return;
+        }
+        parsedResults = [];
+        for (let i = 0; i < req.body.results.length; i++) {
+          const entry = req.body.results[i];
+          if (!isPlainObject(entry)) {
+            res.status(400).json({ ok: false, error: `Invalid results[${i}]: must be an object` });
+            return;
+          }
+          parsedResults.push({
+            commandId: typeof entry.commandId === 'string' ? entry.commandId : undefined,
+            eventId: typeof entry.eventId === 'string' ? entry.eventId : undefined,
+            status: typeof entry.status === 'string' ? entry.status : undefined,
+          });
+        }
+      }
+
+      if (
+        commandIds === null &&
+        eventIds === null &&
+        notificationIds === null &&
+        parsedResults === null
+      ) {
+        res.status(400).json({
+          ok: false,
+          error: 'Missing commandIds, eventIds, notificationIds, or results array',
+        });
+        return;
+      }
+
+      const existingAndroidState = await stateStore.readAndroidState();
+      const explicitDeviceId =
+        typeof req.body.deviceId === 'string' ? req.body.deviceId.trim() : '';
+      const candidateDeviceId =
+        explicitDeviceId || existingAndroidState.device?.deviceId || 'sm_n770f_default';
+
+      const allowedIds = existingAndroidState.allowedDeviceIds || ['sm_n770f_default'];
+      if (
+        allowedIds.length > 0 &&
+        !allowedIds.includes('*') &&
+        !allowedIds.includes(candidateDeviceId)
+      ) {
+        res.status(403).json({ ok: false, error: 'Device not authorized' });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      let ackResult = { ackedCount: 0, alreadyAckedCount: 0, remainingPendingCount: 0 };
+
+      await stateStore.updateAndroidState(draft => {
+        if (draft.device) {
+          draft.device.lastSeenAt = nowIso;
+        }
+        ackResult = acknowledgePendingCommands(draft, {
+          commandIds: commandIds ?? [],
+          eventIds: eventIds ?? [],
+          results: parsedResults ?? [],
+          nowIso,
+          callbackUrl: 'ACTIVE_POLL_ACK',
+        });
+        if (notificationIds && notificationIds.length > 0) {
+          acknowledgeNotifications(draft, notificationIds);
+        }
+      });
+
+      res.status(200).json({
+        ok: true,
+        ackedCount: ackResult.ackedCount,
+        alreadyAckedCount: ackResult.alreadyAckedCount,
+        remainingPendingCount: ackResult.remainingPendingCount,
+        serverTime: nowIso,
+      });
+    } catch (error) {
+      res.status(500).json({
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed to acknowledge Android poll commands',
+      });
+    }
+  });
 
   // 0d-1. Manual / Programmatic Android Push Notification Dispatch
   app.post('/api/android/notify', async (req, res) => {
@@ -1142,8 +1541,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           .map(u => u.username);
         watcher.setTargetUsers(tikTokUsers);
       }
-      if (state.scannerSettings?.cookies?.tiktok) {
-        watcher.updateConfig({ tiktokSessionId: state.scannerSettings.cookies.tiktok });
+      if (typeof state.scannerSettings?.cookies?.tiktok === 'string') {
+        const wsCookie = state.scannerSettings.cookies.tiktok.trim();
+        const envCookie = normalizeCookieValue(options.envCookies?.tiktok);
+        watcher.updateConfig({ tiktokSessionId: wsCookie || envCookie });
       }
       const ttPlatforms = (state.scannerSettings as any)?.platforms?.tiktok;
       if (ttPlatforms) {
@@ -1261,10 +1662,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
       } = req.body || {};
 
       const safeCookies: PlatformCookies = {
-        tiktok: typeof cookies?.tiktok === 'string' ? cookies.tiktok : '',
-        instagram: typeof cookies?.instagram === 'string' ? cookies.instagram : '',
-        facebook: typeof cookies?.facebook === 'string' ? cookies.facebook : '',
-        x: typeof cookies?.x === 'string' ? cookies.x : '',
+        tiktok: typeof cookies?.tiktok === 'string' ? cookies.tiktok.trim() : '',
+        instagram: typeof cookies?.instagram === 'string' ? cookies.instagram.trim() : '',
+        facebook: typeof cookies?.facebook === 'string' ? cookies.facebook.trim() : '',
+        x: typeof cookies?.x === 'string' ? cookies.x.trim() : '',
       };
 
       if (typeof target === 'string' && target.trim().length > 0) {
@@ -1339,10 +1740,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
       }
 
       const safeCookies: PlatformCookies = {
-        tiktok: typeof cookies?.tiktok === 'string' ? cookies.tiktok : '',
-        instagram: typeof cookies?.instagram === 'string' ? cookies.instagram : '',
-        facebook: typeof cookies?.facebook === 'string' ? cookies.facebook : '',
-        x: typeof cookies?.x === 'string' ? cookies.x : '',
+        tiktok: typeof cookies?.tiktok === 'string' ? cookies.tiktok.trim() : '',
+        instagram: typeof cookies?.instagram === 'string' ? cookies.instagram.trim() : '',
+        facebook: typeof cookies?.facebook === 'string' ? cookies.facebook.trim() : '',
+        x: typeof cookies?.x === 'string' ? cookies.x.trim() : '',
       };
 
       const detections: Array<{

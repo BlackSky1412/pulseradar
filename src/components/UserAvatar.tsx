@@ -123,6 +123,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
       className={`relative inline-flex items-center justify-center shrink-0 select-none ${
         isLive ? 'ring-2 ring-rose-500 ring-offset-2 ring-offset-slate-950 rounded-full' : ''
       } ${className}`}
+      aria-label={`${cleanName} (${platform.toUpperCase()})`}
       title={`${cleanName} (${platform.toUpperCase()})`}
     >
       {/* Base Avatar Container */}
@@ -154,6 +155,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
       {isLive && (
         <span
           className={`absolute ${liveDotClasses} flex items-center justify-center z-10`}
+          aria-hidden="true"
           title="ĐANG LIVE"
         >
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
@@ -173,6 +175,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
               ? 'bg-[#1877F2] text-white'
               : 'bg-black text-white border-slate-700'
           }`}
+          aria-hidden="true"
           title={`Nền tảng: ${normPlatform.toUpperCase()}`}
         >
           {normPlatform === 'tiktok' && (

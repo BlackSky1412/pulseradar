@@ -47,8 +47,8 @@ interface ExtractedStream {
   qualityInfo?: string;
 }
 
-function formatTikTokCookie(cookie: string): string {
-  const trimmed = cookie.trim();
+function formatTikTokCookie(cookie: string = ''): string {
+  const trimmed = typeof cookie === 'string' ? cookie.trim() : '';
   if (!trimmed) return '';
   return !trimmed.includes('=') ? `sessionid=${trimmed}` : trimmed;
 }
@@ -566,10 +566,11 @@ export async function checkTikTokLive(
   }
 
   const sourceUrl = `https://www.tiktok.com/@${username}/live`;
+  const safeCookie = formatTikTokCookie(cookie);
 
   // 1. Webcast info_by_user (Unblocked on datacenter/cloud IPs, e.g. Render AWS Singapore)
   try {
-    const webcastRes = await checkViaWebcastInfoByUser(username, cookie, sourceUrl);
+    const webcastRes = await checkViaWebcastInfoByUser(username, safeCookie, sourceUrl);
     if (webcastRes) return webcastRes;
   } catch {
     // fallback
@@ -577,7 +578,7 @@ export async function checkTikTokLive(
 
   // 2. Official api-live/user/room (Desktop UA)
   try {
-    const desktopRes = await checkViaApiLive(username, cookie, sourceUrl, false);
+    const desktopRes = await checkViaApiLive(username, safeCookie, sourceUrl, false);
     if (desktopRes) return desktopRes;
   } catch {
     // fallback
@@ -585,7 +586,7 @@ export async function checkTikTokLive(
 
   // 2. Fallback 1: Mobile UA (bypass Desktop WAF)
   try {
-    const mobileRes = await checkViaApiLive(username, cookie, sourceUrl, true);
+    const mobileRes = await checkViaApiLive(username, safeCookie, sourceUrl, true);
     if (mobileRes) return mobileRes;
   } catch {
     // fallback
@@ -593,7 +594,7 @@ export async function checkTikTokLive(
 
   // 3. Fallback 2: Webpage HTML (SIGI_STATE)
   try {
-    const webRes = await checkViaWebpage(username, cookie, sourceUrl);
+    const webRes = await checkViaWebpage(username, safeCookie, sourceUrl);
     if (webRes) return webRes;
   } catch {
     // fallback

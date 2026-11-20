@@ -19,8 +19,8 @@ function unescapeJsonUrl(raw: string): string {
     .trim();
 }
 
-export function formatInstagramCookie(rawCookie: string): string {
-  const trimmed = rawCookie.trim();
+export function formatInstagramCookie(rawCookie: string = ''): string {
+  const trimmed = typeof rawCookie === 'string' ? rawCookie.trim() : '';
   if (!trimmed) return '';
   if (!trimmed.includes('=')) {
     // User pasted bare Instagram sessionid (e.g. 50160641448%3Axxxx...)
@@ -64,7 +64,8 @@ async function fetchBroadcastInfoById(
     Referer: `https://www.instagram.com/${username}/live/`,
     Accept: '*/*',
   };
-  if (cookie) headers.Cookie = cookie;
+  const safeCookie = typeof cookie === 'string' ? cookie.trim() : '';
+  if (safeCookie) headers.Cookie = safeCookie;
 
   const resp = await fetchWithTimeout(url, { headers, timeoutMs: 8000 });
   if (!resp.ok || !resp.text) return null;
@@ -155,14 +156,15 @@ async function resolveUserIdFromWebPage(
     'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
   };
-  if (cookie) headers.Cookie = cookie;
+  const safeCookie = typeof cookie === 'string' ? cookie.trim() : '';
+  if (safeCookie) headers.Cookie = safeCookie;
 
   let html: string | null = null;
   try {
     const resp = await fetchWithTimeout(url, { headers, timeoutMs: 8000 });
     if (resp.ok) html = resp.text;
   } catch {
-    if (cookie) {
+    if (safeCookie) {
       return resolveUserIdFromWebPage(username, '', sourceUrl);
     }
     return { userId: null, result: null };
@@ -217,7 +219,8 @@ async function checkViaWebProfileInfo(
     Referer: `https://www.instagram.com/${username}/`,
     Accept: '*/*',
   };
-  if (cookie) headers.Cookie = cookie;
+  const safeCookie = typeof cookie === 'string' ? cookie.trim() : '';
+  if (safeCookie) headers.Cookie = safeCookie;
 
   const resp = await fetchWithTimeout(url, { headers, timeoutMs: 8000 });
   if (!resp.ok || !resp.text) return { userId: null, result: null };
@@ -267,7 +270,8 @@ async function checkViaMobileUsernameInfo(
     'X-IG-App-ID': IG_APP_ID,
     Accept: '*/*',
   };
-  if (cookie) headers.Cookie = cookie;
+  const safeCookie = typeof cookie === 'string' ? cookie.trim() : '';
+  if (safeCookie) headers.Cookie = safeCookie;
 
   const resp = await fetchWithTimeout(url, { headers, timeoutMs: 8000 });
   if (!resp.ok || !resp.text) return null;
@@ -300,7 +304,8 @@ async function checkViaLiveWebInfo(
     Referer: `https://www.instagram.com/${username}/live/`,
     Accept: '*/*',
   };
-  if (cookie) headers.Cookie = cookie;
+  const safeCookie = typeof cookie === 'string' ? cookie.trim() : '';
+  if (safeCookie) headers.Cookie = safeCookie;
 
   const resp = await fetchWithTimeout(url, { headers, timeoutMs: 8000 });
   if (resp.status === 404 && resp.text.toLowerCase().includes('user is not live')) {
@@ -342,7 +347,8 @@ async function checkViaUserStoryFeed(
     Referer: `https://www.instagram.com/${username}/`,
     Accept: '*/*',
   };
-  if (cookie) headers.Cookie = cookie;
+  const safeCookie = typeof cookie === 'string' ? cookie.trim() : '';
+  if (safeCookie) headers.Cookie = safeCookie;
 
   const resp = await fetchWithTimeout(url, { headers, timeoutMs: 8000 });
   if (!resp.ok || !resp.text) return null;
@@ -368,7 +374,8 @@ async function checkViaReelsMedia(
     'X-IG-App-ID': IG_APP_ID,
     Accept: '*/*',
   };
-  if (cookie) headers.Cookie = cookie;
+  const safeCookie = typeof cookie === 'string' ? cookie.trim() : '';
+  if (safeCookie) headers.Cookie = safeCookie;
 
   const resp = await fetchWithTimeout(url, { headers, timeoutMs: 8000 });
   if (!resp.ok || !resp.text) return null;
@@ -400,7 +407,8 @@ async function checkViaLiveWebPage(
     'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
   };
-  if (cookie) headers.Cookie = cookie;
+  const safeCookie = typeof cookie === 'string' ? cookie.trim() : '';
+  if (safeCookie) headers.Cookie = safeCookie;
 
   const resp = await fetchWithTimeout(url, { headers, timeoutMs: 8000 });
   if (!resp.ok || !resp.text) return null;

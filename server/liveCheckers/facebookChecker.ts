@@ -162,7 +162,8 @@ async function queryFacebookPage(
     'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
   };
-  if (cookie) headers.Cookie = cookie;
+  const safeCookie = typeof cookie === 'string' ? cookie.trim() : '';
+  if (safeCookie) headers.Cookie = safeCookie;
 
   const resp = await fetchWithTimeout(url, { headers, timeoutMs: 10000 });
   if (!resp.text) {
@@ -208,7 +209,8 @@ async function checkDirectUrl(
   try {
     let resolvedUrl = rawUrl;
     const headers: Record<string, string> = { 'User-Agent': DESKTOP_USER_AGENT };
-    if (cookie) headers.Cookie = cookie;
+    const safeCookie = typeof cookie === 'string' ? cookie.trim() : '';
+    if (safeCookie) headers.Cookie = safeCookie;
 
     const headResp = await fetchWithTimeout(rawUrl, {
       method: 'HEAD',
@@ -244,7 +246,7 @@ export async function checkFacebookLive(
     };
   }
 
-  const formattedCookie = facebookCookie.trim();
+  const formattedCookie = typeof facebookCookie === 'string' ? facebookCookie.trim() : '';
   const isNumericId = /^\d+$/.test(username);
   const defaultSourceUrl = trimmedInput.startsWith('http')
     ? trimmedInput

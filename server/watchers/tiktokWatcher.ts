@@ -67,7 +67,13 @@ export class TikTokWatcher {
   };
 
   constructor(options: TikTokWatcherOptions) {
-    this.config = { ...options.config };
+    this.config = {
+      ...options.config,
+      tiktokSessionId:
+        typeof options.config.tiktokSessionId === 'string'
+          ? options.config.tiktokSessionId.trim()
+          : '',
+    };
     this.stateStore = options.stateStore || createWatcherStateStore();
     this.mediaDownloader =
       options.mediaDownloader ||
@@ -108,6 +114,14 @@ export class TikTokWatcher {
 
   updateConfig(partial: Partial<WatcherConfig>): void {
     this.config = { ...this.config, ...partial };
+    if ('tiktokSessionId' in partial) {
+      const nextCookie =
+        typeof partial.tiktokSessionId === 'string' ? partial.tiktokSessionId.trim() : '';
+      this.config.tiktokSessionId = nextCookie;
+      for (const collector of Object.values(this.collectors)) {
+        collector.setCookie?.(nextCookie);
+      }
+    }
   }
 
   async runCycle(eventType: WatcherEventType): Promise<WatcherCycleReport> {

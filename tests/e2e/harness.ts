@@ -23,6 +23,10 @@ import type {
   MockAndroidReceiver,
   MockAndroidUserState,
   MockFaultConfig,
+  PollAckRequest,
+  PollAckResponse,
+  PollRequest,
+  PollResponse,
   RegisterRequest,
   RegisterResponse,
   SyncRequest,
@@ -119,9 +123,9 @@ export function buildProduction44WorkspaceState(): WorkspaceState {
     scannerSettings: {
       cookies: {
         tiktok: '',
-        instagram: 'test_ig_cookie',
-        facebook: 'test_fb_cookie',
-        x: 'test_x_cookie',
+        instagram: '',
+        facebook: '',
+        x: '',
       },
       pollIntervalSeconds: 30,
       deduplicateLive: true,
@@ -835,6 +839,18 @@ export async function createE2EHarness(options?: {
       }),
     syncAndroid: (payload: Record<string, unknown>) =>
       httpJson<SyncResponse | ErrorResponse>(currentPulseRadarUrl, '/api/android/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }),
+    pollAndroid: (payload: PollRequest = { deviceId: 'sm_n770f_default' }) =>
+      httpJson<PollResponse | ErrorResponse>(currentPulseRadarUrl, '/api/android/poll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }),
+    ackAndroidPoll: (payload: PollAckRequest) =>
+      httpJson<PollAckResponse | ErrorResponse>(currentPulseRadarUrl, '/api/android/poll/ack', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

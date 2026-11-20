@@ -37,8 +37,9 @@ async function defaultFetchTikTokPosts(
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
   };
-  if (cookie) {
-    headers.Cookie = cookie.includes('=') ? cookie : `sessionid=${cookie}`;
+  const trimmedCookie = typeof cookie === 'string' ? cookie.trim() : '';
+  if (trimmedCookie) {
+    headers.Cookie = trimmedCookie.includes('=') ? trimmedCookie : `sessionid=${trimmedCookie}`;
   }
 
   const resp = await fetchWithTimeout(url, { headers, timeoutMs: 10000 });
@@ -128,10 +129,14 @@ export class TikTokPostCollector implements BaseCollector {
   constructor(options?: TikTokPostCollectorOptions) {
     this.topN = options?.topN ?? 10;
     this.skipPinned = options?.skipPinned ?? true;
-    this.cookie = options?.cookie;
+    this.cookie = typeof options?.cookie === 'string' ? options.cookie.trim() : '';
     this.fetcher =
       options?.fetcher ||
       ((username, count) => defaultFetchTikTokPosts(username, count, this.cookie));
+  }
+
+  setCookie(cookie: string): void {
+    this.cookie = typeof cookie === 'string' ? cookie.trim() : '';
   }
 
   async fetch(rawUsername: string): Promise<TikTokEvent[]> {

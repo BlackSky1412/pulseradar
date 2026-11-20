@@ -65,6 +65,7 @@ import {
   type ActivityEventType,
   type LiveTargetScanStatus,
   type SocialPlatformKey,
+  type TargetStreamMeta,
   SOCIAL_KEY_TO_PLATFORM,
   PLATFORM_TO_SOCIAL_KEY,
   PLATFORM_BRAND_NAMES,
@@ -81,6 +82,7 @@ import {
   parseSourceMeta,
   isLiveUserTarget,
   normalizeMultiPlatformSettings,
+  formatTimestamp,
 } from './utils/scannerEngine';
 import { RuleModal } from './components/RuleModal';
 import { WebhookModal } from './components/WebhookModal';
@@ -90,6 +92,9 @@ import {
   type LiveScannerSettings,
 } from './components/CookieSettingsModal';
 import { UserAvatar } from './components/UserAvatar';
+import { InfoPopover } from './components/InfoPopover';
+import { WatchlistSection } from './components/WatchlistSection';
+import { ActivityLogSection } from './components/ActivityLogSection';
 
 export type ActiveTab =
   | 'overview'
@@ -146,27 +151,6 @@ interface WatcherStatusData {
     seenEventsCount: number;
     trackedUsersCount: number;
   };
-}
-
-interface TargetStreamMeta {
-  live: boolean;
-  post: boolean;
-  story: boolean;
-  warmup: boolean;
-}
-
-function formatTimestamp(isoString: string): string {
-  try {
-    const d = new Date(isoString);
-    if (Number.isNaN(d.getTime())) return isoString;
-    return d.toLocaleTimeString('vi-VN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  } catch {
-    return isoString;
-  }
 }
 
 function toIsoString(val: unknown): string {
@@ -1469,7 +1453,7 @@ export default function App() {
             e.preventDefault();
             navigateToTab('tiktok', 'tiktok');
           }}
-          className="text-lg font-bold tracking-tight text-slate-100 whitespace-nowrap shrink-0 flex items-center gap-2"
+          className="min-h-[44px] md:min-h-0 inline-flex items-center gap-2 text-lg font-bold tracking-tight text-slate-100 whitespace-nowrap shrink-0"
         >
           <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 shadow-xs" />
           PulseRadar
@@ -1486,7 +1470,7 @@ export default function App() {
               e.preventDefault();
               navigateToTab('tiktok', 'tiktok');
             }}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+            className={`py-1 md:min-h-[36px] transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
               (activeTab === 'tiktok' || (isPlatformView && selectedPlatform === 'tiktok'))
                 ? 'text-cyan-400 font-bold underline underline-offset-8 decoration-2'
                 : 'hover:text-slate-100'
@@ -1504,7 +1488,7 @@ export default function App() {
               e.preventDefault();
               navigateToTab('instagram', 'instagram');
             }}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+            className={`py-1 md:min-h-[36px] transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
               (activeTab === 'instagram' || (isPlatformView && selectedPlatform === 'instagram'))
                 ? 'text-fuchsia-400 font-bold underline underline-offset-8 decoration-2'
                 : 'hover:text-slate-100'
@@ -1522,7 +1506,7 @@ export default function App() {
               e.preventDefault();
               navigateToTab('facebook', 'facebook');
             }}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+            className={`py-1 md:min-h-[36px] transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
               (activeTab === 'facebook' || (isPlatformView && selectedPlatform === 'facebook'))
                 ? 'text-blue-400 font-bold underline underline-offset-8 decoration-2'
                 : 'hover:text-slate-100'
@@ -1540,7 +1524,7 @@ export default function App() {
               e.preventDefault();
               navigateToTab('x', 'x');
             }}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+            className={`py-1 md:min-h-[36px] transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 ${
               (activeTab === 'x' || (isPlatformView && selectedPlatform === 'x'))
                 ? 'text-slate-100 font-bold underline underline-offset-8 decoration-2'
                 : 'hover:text-slate-100'
@@ -1560,7 +1544,7 @@ export default function App() {
               e.preventDefault();
               navigateToTab('servers');
             }}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 ${
+            className={`py-1 md:min-h-[36px] inline-flex items-center transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'servers'
                 ? 'text-indigo-400 font-semibold underline underline-offset-8 decoration-2'
                 : 'hover:text-slate-100'
@@ -1575,7 +1559,7 @@ export default function App() {
               e.preventDefault();
               navigateToTab('sandbox');
             }}
-            className={`py-1 transition-colors whitespace-nowrap shrink-0 ${
+            className={`py-1 md:min-h-[36px] inline-flex items-center transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'sandbox'
                 ? 'text-indigo-400 font-semibold underline underline-offset-8 decoration-2'
                 : 'hover:text-slate-100'
@@ -1591,7 +1575,7 @@ export default function App() {
             type="button"
             onClick={() => runSocialScan()}
             disabled={isScanning}
-            className="min-h-[40px] sm:min-h-[38px] inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-500 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
+            className="min-h-[44px] md:min-h-[38px] inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-500 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
           >
             {isScanning ? (
               <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -1616,87 +1600,127 @@ export default function App() {
             <span className="leading-relaxed">{lastScanSummary}</span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5 min-w-0">
             <button
               type="button"
               onClick={() => setIsCookieModalOpen(true)}
-              className={`min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+              className={`min-h-[44px] md:min-h-[36px] inline-flex items-center gap-1.5 px-3 py-2 md:py-1.5 text-xs font-medium rounded-lg border transition-colors max-w-full whitespace-normal text-left sm:whitespace-nowrap shrink-0 ${
                 configuredCookieCount > 0
                   ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-200'
                   : 'border-slate-800 bg-slate-900 text-slate-300 hover:border-slate-700 hover:text-slate-100'
               }`}
             >
-              <KeyRound className="w-3.5 h-3.5" />
+              <KeyRound className="w-3.5 h-3.5 shrink-0" />
               Chu kỳ & Cookie ({configuredCookieCount > 0 ? `${configuredCookieCount} Cookie` : 'Mặc định ẩn danh'})
             </button>
 
             {serverAutoScanManaged ? (
-              <div
-                title={
-                  androidStatus?.scanner.lastScanAt
-                    ? `Lần quét server gần nhất: ${formatTimestamp(androidStatus.scanner.lastScanAt)}`
-                    : 'Máy chủ đang tự động quét Live theo chu kỳ'
+              <InfoPopover
+                placement="popover"
+                align="left"
+                ariaLabel="Xem chi tiết trạng thái Server Auto-Scan"
+                title="Server Auto-Scan"
+                triggerClassName="min-h-[44px] md:min-h-[36px] px-3 py-2 md:py-1.5 text-xs font-medium rounded-lg border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/20 max-w-full whitespace-normal text-left sm:whitespace-nowrap"
+                trigger={
+                  <>
+                    <Radio
+                      className={`w-3.5 h-3.5 shrink-0 ${
+                        androidStatus?.scanner.scanning ? 'animate-pulse' : ''
+                      }`}
+                    />
+                    <span>
+                      Server Auto-Scan: Bật (
+                      {androidStatus?.scanner.pollIntervalSeconds ?? scannerSettings.pollIntervalSeconds}
+                      s)
+                      {androidStatus?.scanner.scanning ? ' · Đang quét...' : ''}
+                      {(androidStatus?.scanner.activeLiveCount ?? 0) > 0
+                        ? ` · ${androidStatus?.scanner.activeLiveCount} Live`
+                        : ''}
+                    </span>
+                    <Info className="w-3.5 h-3.5 opacity-75 shrink-0" />
+                  </>
                 }
-                className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 whitespace-nowrap shrink-0"
               >
-                <Radio
-                  className={`w-3.5 h-3.5 ${
-                    androidStatus?.scanner.scanning ? 'animate-pulse' : ''
-                  }`}
-                />
-                <span>
-                  Server Auto-Scan: Bật (
-                  {androidStatus?.scanner.pollIntervalSeconds ?? scannerSettings.pollIntervalSeconds}
-                  s)
-                  {androidStatus?.scanner.scanning ? ' · Đang quét...' : ''}
-                  {(androidStatus?.scanner.activeLiveCount ?? 0) > 0
-                    ? ` · ${androidStatus?.scanner.activeLiveCount} Live`
-                    : ''}
-                </span>
-              </div>
+                <div className="space-y-1">
+                  <p>
+                    {androidStatus?.scanner.lastScanAt
+                      ? `Lần quét server gần nhất: ${formatTimestamp(androidStatus.scanner.lastScanAt)}`
+                      : 'Máy chủ đang tự động quét Live theo chu kỳ.'}
+                  </p>
+                  <p className="text-slate-400 font-mono text-[11px]">
+                    Chu kỳ: {androidStatus?.scanner.pollIntervalSeconds ?? scannerSettings.pollIntervalSeconds}s · Đang phát Live: {androidStatus?.scanner.activeLiveCount ?? 0}
+                  </p>
+                </div>
+              </InfoPopover>
             ) : (
               <button
                 type="button"
                 onClick={() => setAutoScanEnabled(prev => !prev)}
-                className={`min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                className={`min-h-[44px] md:min-h-[36px] inline-flex items-center gap-1.5 px-3 py-2 md:py-1.5 text-xs font-medium rounded-lg border transition-colors max-w-full whitespace-normal text-left sm:whitespace-nowrap shrink-0 ${
                   autoScanEnabled
                     ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
                     : 'border-slate-800 bg-slate-900 text-slate-300 hover:border-slate-700 hover:text-slate-100'
                 }`}
               >
-                <Clock className="w-3.5 h-3.5" />
+                <Clock className="w-3.5 h-3.5 shrink-0" />
                 {autoScanEnabled
                   ? `Quét tự động: Bật (${scannerSettings.pollIntervalSeconds}s)`
                   : `Bật quét tự động (${scannerSettings.pollIntervalSeconds}s)`}
               </button>
             )}
 
-            <div
-              title={
+            <InfoPopover
+              placement="popover"
+              align="right"
+              ariaLabel="Xem chi tiết trạng thái kết nối Android"
+              title="Thiết bị Android StreamRecorder"
+              triggerClassName={`min-h-[44px] md:min-h-[36px] px-3 py-2 md:py-1.5 text-xs font-medium rounded-lg border transition-colors max-w-full whitespace-normal text-left sm:whitespace-nowrap ${
                 androidStatus?.scanner.lastDispatchError
-                  ? `Lỗi gửi lệnh gần nhất: ${androidStatus.scanner.lastDispatchError}`
-                  : androidStatus?.device?.callbackUrl || 'Chưa có thiết bị Android đăng ký IP'
-              }
-              className={`min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border whitespace-nowrap shrink-0 ${
-                androidStatus?.scanner.lastDispatchError
-                  ? 'border-amber-500/50 bg-amber-500/15 text-amber-200'
+                  ? 'border-amber-500/50 bg-amber-500/15 text-amber-200 hover:bg-amber-500/20'
                   : androidStatus?.device
-                  ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-200'
-                  : 'border-slate-800 bg-slate-900 text-slate-400'
+                  ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/20'
+                  : 'border-slate-800 bg-slate-900 text-slate-400 hover:bg-slate-800'
               }`}
+              trigger={
+                <>
+                  <Server className="w-3.5 h-3.5 shrink-0" />
+                  {androidStatus?.device ? (
+                    <span>
+                      Android: {androidStatus.device.ip}:{androidStatus.device.port}
+                      {androidStatus.device.lastSyncAt
+                        ? ` · Sync ${formatTimestamp(androidStatus.device.lastSyncAt)}`
+                        : ''}
+                    </span>
+                  ) : (
+                    <span>Android: Chờ đăng ký IP</span>
+                  )}
+                  <Info className="w-3.5 h-3.5 opacity-75 shrink-0" />
+                </>
+              }
             >
-              <Server className="w-3.5 h-3.5" />
-              {androidStatus?.device ? (
-                <span>
-                  Android: {androidStatus.device.ip}:{androidStatus.device.port}
-                  {androidStatus.device.lastSyncAt
-                    ? ` · Sync ${formatTimestamp(androidStatus.device.lastSyncAt)}`
-                    : ''}
-                </span>
-              ) : (
-                <span>Android: Chờ đăng ký IP</span>
-              )}
-            </div>
+              <div className="space-y-1.5">
+                {androidStatus?.scanner.lastDispatchError && (
+                  <p className="text-amber-300 font-medium">
+                    Lỗi gửi lệnh gần nhất: {androidStatus.scanner.lastDispatchError}
+                  </p>
+                )}
+                {androidStatus?.device ? (
+                  <div className="space-y-1 text-[11px] font-mono text-slate-300">
+                    <p className="break-all">
+                      Endpoint: {androidStatus.device.callbackUrl || `${androidStatus.device.ip}:${androidStatus.device.port}`}
+                    </p>
+                    {androidStatus.device.lastSeenAt && (
+                      <p>Hoạt động gần nhất: {formatTimestamp(androidStatus.device.lastSeenAt)}</p>
+                    )}
+                    {androidStatus.device.lastSyncAt && (
+                      <p>Đồng bộ gần nhất: {formatTimestamp(androidStatus.device.lastSyncAt)}</p>
+                    )}
+                  </div>
+                ) : (
+                  <p>Chưa có thiết bị Android đăng ký IP.</p>
+                )}
+              </div>
+            </InfoPopover>
 
             {currentUser ? (
               <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -1706,7 +1730,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => logOutUser()}
-                  className="min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-300 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0"
+                  className="min-h-[44px] md:min-h-[36px] inline-flex items-center gap-1 px-3 py-2 md:px-2.5 md:py-1.5 text-xs font-medium text-slate-300 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                   Đăng xuất
@@ -1716,7 +1740,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => signInWithGoogle().catch(() => {})}
-                className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-900 border border-slate-800 rounded-lg hover:bg-slate-800 hover:text-slate-100 transition-colors whitespace-nowrap shrink-0"
+                className="min-h-[44px] md:min-h-[36px] inline-flex items-center gap-1.5 px-3 py-2 md:py-1.5 text-xs font-medium text-slate-300 bg-slate-900 border border-slate-800 rounded-lg hover:bg-slate-800 hover:text-slate-100 transition-colors whitespace-nowrap shrink-0"
               >
                 <LogIn className="w-3.5 h-3.5" />
                 Đồng bộ Cloud (Google)
@@ -1748,7 +1772,7 @@ export default function App() {
                     setEditingRule(null);
                     setIsRuleModalOpen(true);
                   }}
-                  className="min-h-[36px] self-start sm:self-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-500 transition-colors whitespace-nowrap shrink-0"
+                  className="min-h-[44px] md:min-h-[36px] self-start sm:self-auto inline-flex items-center gap-1.5 px-3.5 py-2 md:px-3 md:py-1.5 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-500 transition-colors whitespace-nowrap shrink-0"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   Thêm Mục Tiêu Nguồn Mới
@@ -1823,8 +1847,8 @@ export default function App() {
             <section className="bg-[#0C111D] border border-slate-800/90 rounded-2xl p-4 sm:p-6 space-y-5">
               {/* Command Center Platform Header */}
               <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-800/80">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span
                       className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold uppercase border ${
                         PLATFORM_THEMES[selectedPlatform].badge
@@ -1861,12 +1885,12 @@ export default function App() {
                         specificRule: activePlatformRule,
                       })
                     }
-                    className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-rose-100 bg-rose-600/90 hover:bg-rose-600 border border-rose-500 rounded-xl transition-colors whitespace-nowrap shadow-xs disabled:opacity-50"
+                    className="min-h-[44px] md:min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-rose-100 bg-rose-600/90 hover:bg-rose-600 border border-rose-500 rounded-xl transition-colors max-w-full whitespace-normal text-left sm:whitespace-nowrap shadow-xs disabled:opacity-50"
                   >
                     {isScanning && !scanningTargetKey ? (
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
                     ) : (
-                      <Play className="w-3.5 h-3.5" />
+                      <Play className="w-3.5 h-3.5 shrink-0" />
                     )}
                     <span>Quét toàn bộ {PLATFORM_BRAND_NAMES[selectedPlatform]} ngay</span>
                   </button>
@@ -1874,7 +1898,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setIsCookieModalOpen(true)}
-                    className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-indigo-200 bg-indigo-950/70 border border-indigo-700/70 rounded-xl hover:bg-indigo-900/70 transition-colors whitespace-nowrap"
+                    className="min-h-[44px] md:min-h-[38px] inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-indigo-200 bg-indigo-950/70 border border-indigo-700/70 rounded-xl hover:bg-indigo-900/70 transition-colors whitespace-nowrap"
                   >
                     <KeyRound className="w-3.5 h-3.5" />
                     Cookie & Chu kỳ
@@ -1886,7 +1910,7 @@ export default function App() {
                       setEditingRule(activePlatformRule);
                       setIsRuleModalOpen(true);
                     }}
-                    className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-300 bg-slate-900 border border-slate-700 rounded-xl hover:bg-slate-800 transition-colors whitespace-nowrap"
+                    className="min-h-[44px] md:min-h-[38px] inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-300 bg-slate-900 border border-slate-700 rounded-xl hover:bg-slate-800 transition-colors whitespace-nowrap"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
                     Cấu hình nguồn
@@ -1962,7 +1986,7 @@ export default function App() {
                 {/* 1. Live Tracking Card */}
                 <div className="p-4 rounded-2xl bg-slate-950/90 border border-rose-900/40 flex flex-col justify-between space-y-4 hover:border-rose-700/60 transition-colors">
                   <div className="space-y-3">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <div className="p-2 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300">
                           <Radio className="w-4 h-4" />
@@ -1980,30 +2004,30 @@ export default function App() {
                     </div>
 
                     <div className="space-y-1.5 text-xs text-slate-400 divide-y divide-slate-800/60 pt-1">
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Chu kỳ quét:</span>
-                        <span className="font-mono text-slate-200 font-semibold">
+                        <span className="font-mono text-slate-200 font-semibold text-right">
                           {currentPlatformConfig.liveIntervalSeconds}s (Jitter 10-20%)
                         </span>
                       </div>
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Chống trùng (Dedup):</span>
-                        <span className="font-mono text-indigo-300">room_id</span>
+                        <span className="font-mono text-indigo-300 text-right">room_id</span>
                       </div>
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Đang phát Live:</span>
                         <span
-                          className={`font-mono font-bold ${
+                          className={`font-mono font-bold text-right ${
                             activePlatformLiveCount > 0 ? 'text-rose-400' : 'text-slate-300'
                           }`}
                         >
                           {activePlatformLiveCount} / {activePlatformTargets.length} kênh
                         </span>
                       </div>
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Sức khỏe luồng:</span>
                         <span
-                          className={`font-mono ${
+                          className={`font-mono text-right ${
                             (currentLiveHealth?.consecutiveErrors ?? 0) > 0
                               ? 'text-amber-400 font-bold'
                               : 'text-emerald-400'
@@ -2023,7 +2047,7 @@ export default function App() {
                         specificRule: activePlatformRule,
                       })
                     }
-                    className="w-full min-h-[36px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-200 bg-rose-950/70 hover:bg-rose-900/70 border border-rose-800/80 rounded-xl transition-colors disabled:opacity-50"
+                    className="w-full min-h-[44px] md:min-h-[36px] inline-flex items-center justify-center gap-1.5 px-3 py-2 md:py-1.5 text-xs font-semibold text-rose-200 bg-rose-950/70 hover:bg-rose-900/70 border border-rose-800/80 rounded-xl transition-colors disabled:opacity-50"
                   >
                     <Radio className="w-3.5 h-3.5" />
                     Quét Live {PLATFORM_BRAND_NAMES[selectedPlatform]}
@@ -2033,7 +2057,7 @@ export default function App() {
                 {/* 2. Post Tracking Card */}
                 <div className="p-4 rounded-2xl bg-slate-950/90 border border-blue-900/40 flex flex-col justify-between space-y-4 hover:border-blue-700/60 transition-colors">
                   <div className="space-y-3">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <div className="p-2 rounded-xl bg-blue-500/15 border border-blue-500/30 text-blue-300">
                           <FileText className="w-4 h-4" />
@@ -2051,25 +2075,25 @@ export default function App() {
                     </div>
 
                     <div className="space-y-1.5 text-xs text-slate-400 divide-y divide-slate-800/60 pt-1">
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Chu kỳ quét:</span>
-                        <span className="font-mono text-slate-200 font-semibold">
+                        <span className="font-mono text-slate-200 font-semibold text-right">
                           {currentPlatformConfig.postIntervalSeconds}s (3-5 phút)
                         </span>
                       </div>
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Chống trùng (Dedup):</span>
-                        <span className="font-mono text-indigo-300">video_id (bỏ qua ghim)</span>
+                        <span className="font-mono text-indigo-300 text-right">video_id (bỏ qua ghim)</span>
                       </div>
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Tài khoản theo dõi:</span>
-                        <span className="font-mono text-slate-200 font-semibold">
+                        <span className="font-mono text-slate-200 font-semibold text-right">
                           {activePlatformTargets.length} tài khoản
                         </span>
                       </div>
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Trạng thái Warmup:</span>
-                        <span className="font-mono text-emerald-400">Đã nạp baseline</span>
+                        <span className="font-mono text-emerald-400 text-right">Đã nạp baseline</span>
                       </div>
                     </div>
                   </div>
@@ -2084,7 +2108,7 @@ export default function App() {
                         injectedText: `Kiểm tra video mới nhất từ ${PLATFORM_BRAND_NAMES[selectedPlatform]}`,
                       })
                     }
-                    className="w-full min-h-[36px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-200 bg-blue-950/70 hover:bg-blue-900/70 border border-blue-800/80 rounded-xl transition-colors disabled:opacity-50"
+                    className="w-full min-h-[44px] md:min-h-[36px] inline-flex items-center justify-center gap-1.5 px-3 py-2 md:py-1.5 text-xs font-semibold text-blue-200 bg-blue-950/70 hover:bg-blue-900/70 border border-blue-800/80 rounded-xl transition-colors disabled:opacity-50"
                   >
                     <FileText className="w-3.5 h-3.5" />
                     Quét Post {PLATFORM_BRAND_NAMES[selectedPlatform]}
@@ -2094,7 +2118,7 @@ export default function App() {
                 {/* 3. Story Tracking Card */}
                 <div className="p-4 rounded-2xl bg-slate-950/90 border border-amber-900/40 flex flex-col justify-between space-y-4 hover:border-amber-700/60 transition-colors">
                   <div className="space-y-3">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <div className="p-2 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300">
                           <Sparkles className="w-4 h-4" />
@@ -2118,29 +2142,29 @@ export default function App() {
                     </div>
 
                     <div className="space-y-1.5 text-xs text-slate-400 divide-y divide-slate-800/60 pt-1">
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Chu kỳ quét:</span>
-                        <span className="font-mono text-slate-200 font-semibold">
+                        <span className="font-mono text-slate-200 font-semibold text-right">
                           {currentPlatformConfig.storyIntervalSeconds}s (5-10 phút)
                         </span>
                       </div>
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Chống trùng (Dedup):</span>
-                        <span className="font-mono text-indigo-300">story_id (lưu 48h)</span>
+                        <span className="font-mono text-indigo-300 text-right">story_id (lưu 48h)</span>
                       </div>
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Chế độ quét:</span>
                         <span
-                          className={`font-mono font-semibold ${
+                          className={`font-mono font-semibold text-right ${
                             hasPlatformCookie ? 'text-emerald-400' : 'text-indigo-400'
                           }`}
                         >
                           {hasPlatformCookie ? 'Đã nạp Cookie' : 'Ẩn danh (Guest)'}
                         </span>
                       </div>
-                      <div className="py-1 flex items-center justify-between">
+                      <div className="py-1 flex items-center justify-between gap-2">
                         <span>Trạng thái Story:</span>
-                        <span className="font-mono text-slate-300">
+                        <span className="font-mono text-slate-300 text-right">
                           {hasPlatformCookie ? 'Đang theo dõi 24h (Cookie)' : 'Đang theo dõi 24h (Ẩn danh)'}
                         </span>
                       </div>
@@ -2157,7 +2181,7 @@ export default function App() {
                         injectedText: `Kiểm tra story 24h mới nhất từ ${PLATFORM_BRAND_NAMES[selectedPlatform]}`,
                       });
                     }}
-                    className="w-full min-h-[36px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-200 bg-amber-950/70 hover:bg-amber-900/70 border border-amber-800/80 rounded-xl transition-colors disabled:opacity-50"
+                    className="w-full min-h-[44px] md:min-h-[36px] inline-flex items-center justify-center gap-1.5 px-3 py-2 md:py-1.5 text-xs font-semibold text-amber-200 bg-amber-950/70 hover:bg-amber-900/70 border border-amber-800/80 rounded-xl transition-colors disabled:opacity-50"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
                     Quét Story {PLATFORM_BRAND_NAMES[selectedPlatform]} ({hasPlatformCookie ? 'Cookie' : 'Ẩn danh'})
@@ -2204,11 +2228,11 @@ export default function App() {
                     }
                     placeholder={`Nhập @username hoặc URL kênh ${PLATFORM_BRAND_NAMES[selectedPlatform]} (VD: @mixigaming, https://${selectedPlatform}.com/...)...`}
                     aria-label={`Thêm mục tiêu theo dõi vào ${PLATFORM_BRAND_NAMES[selectedPlatform]}`}
-                    className="flex-1 min-h-[42px] px-3.5 py-2 text-xs sm:text-sm bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-400"
+                    className="w-full sm:w-auto flex-1 min-h-[44px] px-3.5 py-2 text-sm bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-400"
                   />
                   <button
                     type="submit"
-                    className="min-h-[42px] inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors whitespace-nowrap shrink-0 shadow-sm"
+                    className="w-full sm:w-auto min-h-[44px] inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors whitespace-nowrap shrink-0 shadow-sm"
                   >
                     <Plus className="w-4 h-4" />
                     Thêm kênh
@@ -2217,43 +2241,43 @@ export default function App() {
 
                 {/* Multi-stream subscription toggles and warmup checkbox for new target */}
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/60 text-xs">
-                  <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                     <span className="text-slate-400 font-medium">Bật theo dõi:</span>
-                    <label className="inline-flex items-center gap-1.5 cursor-pointer text-rose-300 font-medium">
+                    <label className="min-h-[44px] md:min-h-0 px-3 py-2 md:px-0 md:py-0 rounded-xl md:rounded-none bg-slate-900/70 md:bg-transparent border border-slate-800 md:border-0 inline-flex items-center gap-2 md:gap-1.5 cursor-pointer text-rose-300 font-medium">
                       <input
                         type="checkbox"
                         checked={inlineTrackLive}
                         onChange={e => setInlineTrackLive(e.target.checked)}
-                        className="rounded border-slate-700 bg-slate-900 text-rose-500 focus:ring-rose-500"
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-rose-500 focus:ring-rose-500"
                       />
                       <span>[Live]</span>
                     </label>
-                    <label className="inline-flex items-center gap-1.5 cursor-pointer text-blue-300 font-medium">
+                    <label className="min-h-[44px] md:min-h-0 px-3 py-2 md:px-0 md:py-0 rounded-xl md:rounded-none bg-slate-900/70 md:bg-transparent border border-slate-800 md:border-0 inline-flex items-center gap-2 md:gap-1.5 cursor-pointer text-blue-300 font-medium">
                       <input
                         type="checkbox"
                         checked={inlineTrackPost}
                         onChange={e => setInlineTrackPost(e.target.checked)}
-                        className="rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500"
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500"
                       />
                       <span>[Post]</span>
                     </label>
-                    <label className="inline-flex items-center gap-1.5 cursor-pointer text-amber-300 font-medium">
+                    <label className="min-h-[44px] md:min-h-0 px-3 py-2 md:px-0 md:py-0 rounded-xl md:rounded-none bg-slate-900/70 md:bg-transparent border border-slate-800 md:border-0 inline-flex items-center gap-2 md:gap-1.5 cursor-pointer text-amber-300 font-medium">
                       <input
                         type="checkbox"
                         checked={inlineTrackStory}
                         onChange={e => setInlineTrackStory(e.target.checked)}
-                        className="rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-amber-500"
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-amber-500"
                       />
                       <span>[Story]</span>
                     </label>
                   </div>
 
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer text-emerald-300 font-medium">
+                  <label className="min-h-[44px] md:min-h-0 px-3 py-2 md:px-0 md:py-0 rounded-xl md:rounded-none bg-slate-900/70 md:bg-transparent border border-slate-800 md:border-0 inline-flex items-center gap-2 md:gap-1.5 cursor-pointer text-emerald-300 font-medium">
                     <input
                       type="checkbox"
                       checked={inlineWarmup}
                       onChange={e => setInlineWarmup(e.target.checked)}
-                      className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-emerald-500"
+                      className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-emerald-500"
                     />
                     <Flame className="w-3.5 h-3.5 text-emerald-400" />
                     <span>Khởi tạo êm (First-run Warmup)</span>
@@ -2309,14 +2333,15 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={() => handleCopyStreamUrl(targetKey, live.streamUrl!)}
-                                className="p-1 rounded-lg bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-colors shrink-0 ml-1"
-                                title="Sao chép Stream URL"
+                                aria-label={`Sao chép Stream URL của ${target}`}
+                                className="min-h-[44px] min-w-[44px] md:min-h-[32px] md:min-w-[32px] inline-flex items-center justify-center gap-1 px-2.5 md:px-2 py-2 md:py-1 rounded-lg bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition-colors shrink-0 ml-1 text-[11px] font-semibold"
                               >
                                 {copiedStreamKey === targetKey ? (
                                   <Check className="w-3.5 h-3.5 text-emerald-400" />
                                 ) : (
                                   <Copy className="w-3.5 h-3.5" />
                                 )}
+                                <span>{copiedStreamKey === targetKey ? 'Đã chép' : 'Copy'}</span>
                               </button>
                             )}
                           </div>
@@ -2326,449 +2351,47 @@ export default function App() {
                 </div>
               )}
 
-              {/* Multi-Stream Watchlist Table */}
-              {activePlatformTargets.length === 0 ? (
-                <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl bg-slate-950/40 space-y-2">
-                  <p className="text-sm font-semibold text-slate-300">
-                    Chưa có kênh nào trong tab {PLATFORM_BRAND_NAMES[selectedPlatform]}
-                  </p>
-                  <p className="text-xs text-slate-500 max-w-md mx-auto">
-                    Nhập <span className="font-mono text-slate-400">@username</span> hoặc dán URL kênh ở ô trên rồi nhấn <strong className="text-slate-300">Thêm kênh</strong> để bắt đầu tự động theo dõi Live, Post và Story.
-                  </p>
-                </div>
-              ) : (
-                <div className="border border-slate-800/80 rounded-2xl bg-slate-950/60 overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr className="border-b border-slate-800 bg-slate-950/90 text-slate-400 font-semibold">
-                          <th className="py-3 px-4">Kênh & Avatar (@Username / URL)</th>
-                          <th className="py-3 px-3">Luồng kích hoạt</th>
-                          <th className="py-3 px-4">Trạng thái Live</th>
-                          <th className="py-3 px-3">Trạng thái Post</th>
-                          <th className="py-3 px-3">Trạng thái Story</th>
-                          <th className="py-3 px-4 text-right">Hành động</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/80">
-                        {activePlatformTargets.map(({ rule, target }) => {
-                          const targetKey = `${rule.id}::${target}`;
-                          const liveInfo = liveStatusMap[targetKey];
-                          const isLiveUser = isLiveUserTarget(target);
-                          const isRowScanning = scanningTargetKey === targetKey;
-                          const meta =
-                            targetStreamMetaMap[targetKey] || {
-                              live: true,
-                              post: true,
-                              story: true,
-                              warmup: true,
-                            };
-
-                          return (
-                            <tr
-                              key={targetKey}
-                              className="hover:bg-slate-900/60 transition-colors"
-                            >
-                              {/* 1. Target Avatar, Name & Metadata */}
-                              <td className="py-3 px-4">
-                                <div className="flex items-center gap-3">
-                                  <UserAvatar
-                                    target={target}
-                                    platform={selectedPlatform}
-                                    isLive={liveInfo?.status === 'LIVE'}
-                                    size="md"
-                                  />
-                                  <div className="min-w-0 flex flex-col justify-center">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="font-mono font-bold text-slate-100 truncate max-w-[200px] text-xs">
-                                        {target}
-                                      </span>
-                                      {meta.warmup && (
-                                        <span
-                                          title="Khởi tạo êm: đã nạp baseline ID vào bộ nhớ"
-                                          className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-emerald-950/70 border border-emerald-800/70 text-emerald-300 font-semibold shrink-0"
-                                        >
-                                          Warmup
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-400 font-mono truncate">
-                                      <span
-                                        className={`px-1 py-0.2 rounded text-[9px] font-mono border shrink-0 ${
-                                          isLiveUser
-                                            ? 'bg-indigo-950/70 border-indigo-800/70 text-indigo-300'
-                                            : 'bg-slate-900 border-slate-700 text-slate-400'
-                                        }`}
-                                      >
-                                        {target.startsWith('http')
-                                          ? 'URL'
-                                          : isLiveUser
-                                          ? '@USER'
-                                          : 'TỪ KHÓA'}
-                                      </span>
-                                      {liveInfo?.title && (
-                                        <span className="truncate max-w-[180px] text-slate-400" title={liveInfo.title}>
-                                          {liveInfo.title}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-                              </td>
-
-                              {/* 2. Multi-stream Toggle Badges */}
-                              <td className="py-3 px-3 whitespace-nowrap">
-                                <div className="inline-flex items-center gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleToggleStreamSubscription(targetKey, 'live')
-                                    }
-                                    title={meta.live ? 'Đang bật Live: bấm để tắt' : 'Đang tắt Live: bấm để bật'}
-                                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border transition-colors ${
-                                      meta.live
-                                        ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
-                                        : 'bg-slate-900 border-slate-800 text-slate-600 line-through'
-                                    }`}
-                                  >
-                                    Live
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleToggleStreamSubscription(targetKey, 'post')
-                                    }
-                                    title={meta.post ? 'Đang bật Post: bấm để tắt' : 'Đang tắt Post: bấm để bật'}
-                                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border transition-colors ${
-                                      meta.post
-                                        ? 'bg-blue-500/20 border-blue-500/50 text-blue-300'
-                                        : 'bg-slate-900 border-slate-800 text-slate-600 line-through'
-                                    }`}
-                                  >
-                                    Post
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleToggleStreamSubscription(targetKey, 'story')
-                                    }
-                                    title={meta.story ? 'Đang bật Story: bấm để tắt' : 'Đang tắt Story: bấm để bật'}
-                                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border transition-colors ${
-                                      meta.story
-                                        ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
-                                        : 'bg-slate-900 border-slate-800 text-slate-600 line-through'
-                                    }`}
-                                  >
-                                    Story
-                                  </button>
-                                </div>
-                              </td>
-
-                              {/* 3. Real-Time Live Status */}
-                              <td className="py-3 px-4">
-                                {liveInfo?.status === 'LIVE' ? (
-                                  <div className="space-y-1">
-                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-mono font-bold rounded-full bg-rose-500/20 border border-rose-500/50 text-rose-300">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-ping" />
-                                      ĐANG LIVE
-                                    </span>
-                                    {liveInfo.qualityInfo && (
-                                      <div className="text-[10px] font-mono text-slate-400 truncate max-w-[180px]">
-                                        {liveInfo.qualityInfo}
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : liveInfo?.status === 'NOT_LIVE' ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-mono rounded-full bg-slate-900 border border-slate-700 text-slate-400">
-                                    Offline · {formatTimestamp(liveInfo.checkedAt)}
-                                  </span>
-                                ) : liveInfo?.status === 'ERROR' ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-mono rounded-full bg-amber-950/70 border border-amber-700/60 text-amber-300">
-                                    <AlertTriangle className="w-3 h-3" />
-                                    Lỗi quét
-                                  </span>
-                                ) : (
-                                  <span className="text-[11px] font-mono text-slate-500">
-                                    Chưa quét
-                                  </span>
-                                )}
-                              </td>
-
-                              {/* 4. Real-Time Post Status */}
-                              <td className="py-3 px-3 whitespace-nowrap">
-                                {meta.post ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-mono rounded-md bg-blue-950/40 border border-blue-800/40 text-blue-300">
-                                    Khởi tạo êm (Đang theo dõi)
-                                  </span>
-                                ) : (
-                                  <span className="text-slate-600 font-mono">Tắt</span>
-                                )}
-                              </td>
-
-                              {/* 5. Real-Time Story Status */}
-                              <td className="py-3 px-3 whitespace-nowrap">
-                                {!meta.story ? (
-                                  <span className="text-slate-600 font-mono">Tắt</span>
-                                ) : (
-                                  <span
-                                    className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-mono rounded-md border ${
-                                      hasPlatformCookie
-                                        ? 'bg-emerald-950/40 border-emerald-800/40 text-emerald-300'
-                                        : 'bg-indigo-950/40 border-indigo-800/40 text-indigo-300'
-                                    }`}
-                                  >
-                                    {hasPlatformCookie ? 'Sẵn sàng · Cookie' : 'Sẵn sàng · Ẩn danh'} · 48h
-                                  </span>
-                                )}
-                              </td>
-
-                              {/* 6. Action Buttons */}
-                              <td className="py-3 px-4 text-right whitespace-nowrap">
-                                <div className="inline-flex items-center justify-end gap-1.5">
-                                  {isLiveUser && (
-                                    <button
-                                      type="button"
-                                      disabled={isScanning}
-                                      onClick={() =>
-                                        runSocialScan({
-                                          specificRule: rule,
-                                          specificTargets: [target],
-                                        })
-                                      }
-                                      className="min-h-[30px] inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-rose-200 bg-rose-950/60 border border-rose-800/60 rounded-lg hover:bg-rose-900/60 disabled:opacity-50 transition-colors"
-                                    >
-                                      {isRowScanning ? (
-                                        <RefreshCw className="w-3 h-3 animate-spin" />
-                                      ) : (
-                                        <Radio className="w-3 h-3" />
-                                      )}
-                                      <span>Quét Live</span>
-                                    </button>
-                                  )}
-
-                                  {liveInfo?.status === 'LIVE' && liveInfo.streamUrl && (
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        handleCopyStreamUrl(targetKey, liveInfo.streamUrl!)
-                                      }
-                                      className="min-h-[30px] inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-emerald-200 bg-emerald-950/60 border border-emerald-700/60 rounded-lg hover:bg-emerald-900/60 transition-colors"
-                                    >
-                                      {copiedStreamKey === targetKey ? (
-                                        <Check className="w-3 h-3 text-emerald-400" />
-                                      ) : (
-                                        <Copy className="w-3 h-3" />
-                                      )}
-                                      <span>{copiedStreamKey === targetKey ? 'Đã chép' : 'Copy'}</span>
-                                    </button>
-                                  )}
-
-                                  {liveInfo?.status === 'LIVE' && liveInfo.sourceUrl && (
-                                    <a
-                                      href={liveInfo.sourceUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      aria-label={`Mở link phòng live của ${target}`}
-                                      className="min-h-[30px] min-w-[30px] inline-flex items-center justify-center text-slate-300 hover:text-white bg-slate-800/80 rounded-lg transition-colors"
-                                    >
-                                      <ExternalLink className="w-3.5 h-3.5" />
-                                    </a>
-                                  )}
-
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setEditingRule(rule);
-                                      setIsRuleModalOpen(true);
-                                    }}
-                                    aria-label={`Sửa cấu hình nguồn ${target}`}
-                                    className="min-h-[30px] min-w-[30px] inline-flex items-center justify-center text-slate-400 hover:text-slate-100 rounded-lg hover:bg-slate-800 transition-colors"
-                                  >
-                                    <Edit3 className="w-3.5 h-3.5" />
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    onClick={() => handleInlineRemoveTarget(rule, target)}
-                                    aria-label={`Xóa ${target}`}
-                                    className="min-h-[30px] min-w-[30px] inline-flex items-center justify-center text-slate-500 hover:text-rose-400 rounded-lg hover:bg-slate-800 transition-colors"
-                                  >
-                                    <X className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
+              {/* Multi-Stream Watchlist (Responsive Mobile Cards + Desktop Table) */}
+              <WatchlistSection
+                selectedPlatform={selectedPlatform}
+                targets={activePlatformTargets}
+                liveStatusMap={liveStatusMap}
+                targetStreamMetaMap={targetStreamMetaMap}
+                hasPlatformCookie={hasPlatformCookie}
+                isScanning={isScanning}
+                scanningTargetKey={scanningTargetKey}
+                copiedStreamKey={copiedStreamKey}
+                onToggleStream={(targetKey, stream) =>
+                  handleToggleStreamSubscription(targetKey, stream)
+                }
+                onScanTarget={(rule, target) =>
+                  runSocialScan({
+                    specificRule: rule,
+                    specificTargets: [target],
+                  })
+                }
+                onCopyStreamUrl={(targetKey, streamUrl) =>
+                  handleCopyStreamUrl(targetKey, streamUrl)
+                }
+                onEditRule={rule => {
+                  setEditingRule(rule);
+                  setIsRuleModalOpen(true);
+                }}
+                onRemoveTarget={(rule, target) => handleInlineRemoveTarget(rule, target)}
+              />
             </section>
 
             {/* 4. Section 02: Activity Detections & Server Request Logs */}
-            <section className="bg-[#0C111D] border border-slate-800/90 rounded-2xl overflow-hidden">
-              <div className="px-4 sm:px-6 py-4 border-b border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-                <div>
-                  <h2 className="text-base font-semibold text-slate-100">
-                    Nhật Ký Phát Hiện Sự Kiện (Live / Post / Story) & Request Đã Bắn Về Máy Chủ
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {logScope === 'platform'
-                      ? `Đang hiển thị sự kiện thuộc nền tảng: ${PLATFORM_BRAND_NAMES[selectedPlatform]}`
-                      : 'Đang hiển thị toàn bộ sự kiện từ tất cả các nền tảng'}
-                  </p>
-                </div>
-
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                  <div className="flex items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl overflow-x-auto">
-                    <button
-                      type="button"
-                      onClick={() => setLogScope('platform')}
-                      className={`min-h-[34px] px-3 py-1 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 ${
-                        logScope === 'platform'
-                          ? 'bg-indigo-600 text-white font-semibold'
-                          : 'text-slate-400 hover:text-slate-100'
-                      }`}
-                    >
-                      Chỉ {PLATFORM_BRAND_NAMES[selectedPlatform]}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setLogScope('all')}
-                      className={`min-h-[34px] px-3 py-1 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 ${
-                        logScope === 'all'
-                          ? 'bg-indigo-600 text-white font-semibold'
-                          : 'text-slate-400 hover:text-slate-100'
-                      }`}
-                    >
-                      Tất cả nguồn ({alerts.length})
-                    </button>
-                  </div>
-
-                  <div className="relative w-full sm:w-56">
-                    <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={e => setSearchQuery(e.target.value)}
-                      placeholder="Tìm @username, từ khóa, live..."
-                      aria-label="Tìm kiếm nhật ký phát hiện"
-                      className="w-full min-h-[38px] pl-8 pr-3 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded-xl text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-400"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {filteredAlerts.length === 0 ? (
-                <div className="p-8 text-center space-y-2">
-                  <p className="text-sm text-slate-400">
-                    Chưa có sự kiện nào trong danh mục này. Hãy bấm &ldquo;Quét Live&rdquo;, &ldquo;Quét Post&rdquo; hoặc &ldquo;Quét Story&rdquo; ở trên để chạy thử nghiệm.
-                  </p>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold">
-                        <th className="py-3 px-6">Thời gian</th>
-                        <th className="py-3 px-4">Loại sự kiện & Mục tiêu</th>
-                        <th className="py-3 px-4">Nền tảng & Creator</th>
-                        <th className="py-3 px-4">Tiêu đề / Nội dung</th>
-                        <th className="py-3 px-4">Máy chủ xử lý & Phản hồi</th>
-                        <th className="py-3 px-6 text-right">Chi tiết Request</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800">
-                      {filteredAlerts.map(item => {
-                        const isLiveEvent =
-                          item.keyword.includes('LIVE') || item.title.toUpperCase().includes('LIVE');
-                        const isStoryEvent =
-                          item.keyword.includes('STORY') || item.title.toUpperCase().includes('STORY');
-
-                        return (
-                          <tr key={item.id} className="hover:bg-slate-800/35 transition-colors">
-                            <td className="py-3.5 px-6 font-mono tabular-nums text-slate-400 whitespace-nowrap">
-                              {formatTimestamp(item.createdAt)}
-                            </td>
-                            <td className="py-3.5 px-4 font-mono whitespace-nowrap">
-                              <span
-                                className={`font-semibold ${
-                                  isLiveEvent
-                                    ? 'text-rose-400'
-                                    : isStoryEvent
-                                    ? 'text-amber-300'
-                                    : 'text-blue-300'
-                                }`}
-                              >
-                                {item.keyword}
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4 text-slate-400 whitespace-nowrap">
-                              <span className="font-medium text-slate-200">
-                                {PLATFORM_LABELS[item.platform]}
-                              </span>
-                              <span aria-hidden="true"> · </span>
-                              <span className="font-mono text-slate-300">
-                                @{item.author.replace(/^@/, '')}
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4 max-w-md">
-                              <div className="font-medium text-slate-100 line-clamp-1">
-                                {item.title}
-                              </div>
-                              <div className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">
-                                {item.contentSnippet}
-                              </div>
-                            </td>
-                            <td className="py-3.5 px-4 whitespace-nowrap">
-                              <div className="font-medium text-slate-200">
-                                {item.webhookServerName}
-                              </div>
-                              <div className="flex items-center gap-1.5 mt-0.5 font-mono tabular-nums">
-                                {item.webhookStatus === 'delivered' ? (
-                                  <span className="inline-flex items-center gap-1 text-emerald-400">
-                                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                                    HTTP {item.httpStatusCode} · {item.latencyMs}ms
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 text-rose-400">
-                                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                                    HTTP {item.httpStatusCode} · {item.latencyMs}ms
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-                            <td className="py-3.5 px-6 text-right whitespace-nowrap">
-                              <div className="inline-flex items-center justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => setInspectingAlert(item)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 border border-slate-700 rounded-lg hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0"
-                                >
-                                  <Code2 className="w-3.5 h-3.5" />
-                                  Xem Request
-                                </button>
-                                <a
-                                  href={item.sourceUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  aria-label={`Xem nguồn sự kiện của ${item.author}`}
-                                  className="p-1.5 text-slate-400 hover:text-slate-100 rounded-lg hover:bg-slate-800 transition-colors"
-                                >
-                                  <ExternalLink className="w-3.5 h-3.5" />
-                                </a>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
+            <ActivityLogSection
+              selectedPlatform={selectedPlatform}
+              logScope={logScope}
+              onChangeLogScope={setLogScope}
+              searchQuery={searchQuery}
+              onChangeSearchQuery={setSearchQuery}
+              totalAlertsCount={alerts.length}
+              filteredAlerts={filteredAlerts}
+              onInspectAlert={setInspectingAlert}
+            />
           </>
         )}
 
@@ -2791,7 +2414,7 @@ export default function App() {
                     setEditingServer(null);
                     setIsWebhookModalOpen(true);
                   }}
-                  className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-500 transition-colors whitespace-nowrap"
+                  className="min-h-[44px] md:min-h-[40px] self-start sm:self-auto inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-500 transition-colors whitespace-nowrap"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   Thêm Máy Chủ Mới
@@ -2805,8 +2428,8 @@ export default function App() {
                     className="p-4 sm:p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-800/20 transition-colors"
                   >
                     <div className="space-y-1.5 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-slate-100">{srv.name}</span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-slate-100 break-words">{srv.name}</span>
                         <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-800">
                           {srv.format.toUpperCase()}
                         </span>
@@ -2825,7 +2448,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => handleToggleServer(srv)}
-                        className={`min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
+                        className={`min-h-[44px] md:min-h-[36px] px-3.5 py-2 md:px-3 md:py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
                           srv.enabled
                             ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
                             : 'border-slate-700 bg-slate-900 text-slate-400'
@@ -2839,7 +2462,8 @@ export default function App() {
                           setEditingServer(srv);
                           setIsWebhookModalOpen(true);
                         }}
-                        className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center text-slate-400 hover:text-slate-100 rounded-lg hover:bg-slate-800 transition-colors"
+                        aria-label={`Chỉnh sửa máy chủ ${srv.name}`}
+                        className="min-h-[44px] min-w-[44px] md:min-h-[36px] md:min-w-[36px] inline-flex items-center justify-center text-slate-400 hover:text-slate-100 rounded-lg hover:bg-slate-800 transition-colors"
                       >
                         <Edit3 className="w-3.5 h-3.5" />
                       </button>
@@ -2847,7 +2471,8 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => handleDeleteServer(srv)}
-                          className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center text-slate-400 hover:text-rose-400 rounded-lg hover:bg-slate-800 transition-colors"
+                          aria-label={`Xóa máy chủ ${srv.name}`}
+                          className="min-h-[44px] min-w-[44px] md:min-h-[36px] md:min-w-[36px] inline-flex items-center justify-center text-slate-400 hover:text-rose-400 rounded-lg hover:bg-slate-800 transition-colors"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -2876,7 +2501,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => fetchSandboxLogs()}
-                  className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
+                  className="min-h-[44px] md:min-h-[36px] inline-flex items-center gap-1.5 px-3.5 py-2 md:px-3 md:py-1.5 text-xs font-medium text-slate-200 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   Làm mới
@@ -2933,14 +2558,14 @@ export default function App() {
           <span>
             PulseRadar — Hệ thống Bot quét Trang Web Nguồn, phát hiện Đăng bài / Livestream / Story & đẩy Request về máy chủ
           </span>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center justify-center gap-1 sm:gap-4">
             <a
               href="#tiktok"
               onClick={e => {
                 e.preventDefault();
                 navigateToTab('tiktok', 'tiktok');
               }}
-              className="hover:text-slate-100 transition-colors"
+              className="min-h-[44px] md:min-h-0 inline-flex items-center px-2.5 py-2 md:px-0 md:py-0 hover:text-slate-100 transition-colors"
             >
               TikTok
             </a>
@@ -2950,7 +2575,7 @@ export default function App() {
                 e.preventDefault();
                 navigateToTab('instagram', 'instagram');
               }}
-              className="hover:text-slate-100 transition-colors"
+              className="min-h-[44px] md:min-h-0 inline-flex items-center px-2.5 py-2 md:px-0 md:py-0 hover:text-slate-100 transition-colors"
             >
               Instagram
             </a>
@@ -2960,7 +2585,7 @@ export default function App() {
                 e.preventDefault();
                 navigateToTab('facebook', 'facebook');
               }}
-              className="hover:text-slate-100 transition-colors"
+              className="min-h-[44px] md:min-h-0 inline-flex items-center px-2.5 py-2 md:px-0 md:py-0 hover:text-slate-100 transition-colors"
             >
               Facebook
             </a>
@@ -2970,7 +2595,7 @@ export default function App() {
                 e.preventDefault();
                 navigateToTab('x', 'x');
               }}
-              className="hover:text-slate-100 transition-colors"
+              className="min-h-[44px] md:min-h-0 inline-flex items-center px-2.5 py-2 md:px-0 md:py-0 hover:text-slate-100 transition-colors"
             >
               X / Twitter
             </a>
@@ -2980,7 +2605,7 @@ export default function App() {
                 e.preventDefault();
                 navigateToTab('servers');
               }}
-              className="hover:text-slate-100 transition-colors"
+              className="min-h-[44px] md:min-h-0 inline-flex items-center px-2.5 py-2 md:px-0 md:py-0 hover:text-slate-100 transition-colors"
             >
               Máy Chủ
             </a>
@@ -2998,7 +2623,7 @@ export default function App() {
           onClick={() => {
             navigateToTab('tiktok', 'tiktok');
           }}
-          className={`flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
+          className={`min-h-[44px] min-w-[44px] flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
             activeTab === 'tiktok' || (isPlatformView && selectedPlatform === 'tiktok')
               ? 'text-cyan-400 font-bold'
               : 'text-slate-400 hover:text-slate-200'
@@ -3011,7 +2636,7 @@ export default function App() {
           onClick={() => {
             navigateToTab('instagram', 'instagram');
           }}
-          className={`flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
+          className={`min-h-[44px] min-w-[44px] flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
             activeTab === 'instagram' || (isPlatformView && selectedPlatform === 'instagram')
               ? 'text-fuchsia-400 font-bold'
               : 'text-slate-400 hover:text-slate-200'
@@ -3024,7 +2649,7 @@ export default function App() {
           onClick={() => {
             navigateToTab('facebook', 'facebook');
           }}
-          className={`flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
+          className={`min-h-[44px] min-w-[44px] flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
             activeTab === 'facebook' || (isPlatformView && selectedPlatform === 'facebook')
               ? 'text-blue-400 font-bold'
               : 'text-slate-400 hover:text-slate-200'
@@ -3037,7 +2662,7 @@ export default function App() {
           onClick={() => {
             navigateToTab('x', 'x');
           }}
-          className={`flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
+          className={`min-h-[44px] min-w-[44px] flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
             activeTab === 'x' || (isPlatformView && selectedPlatform === 'x')
               ? 'text-slate-100 font-bold'
               : 'text-slate-400 hover:text-slate-200'
@@ -3048,7 +2673,7 @@ export default function App() {
         <button
           type="button"
           onClick={() => navigateToTab('servers')}
-          className={`flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
+          className={`min-h-[44px] min-w-[44px] flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
             activeTab === 'servers'
               ? 'text-indigo-400 font-bold'
               : 'text-slate-400 hover:text-slate-200'
@@ -3060,7 +2685,7 @@ export default function App() {
         <button
           type="button"
           onClick={() => navigateToTab('sandbox')}
-          className={`flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
+          className={`min-h-[44px] min-w-[44px] flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
             activeTab === 'sandbox'
               ? 'text-indigo-400 font-bold'
               : 'text-slate-400 hover:text-slate-200'

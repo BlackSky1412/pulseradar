@@ -42,8 +42,12 @@ export class TikTokLiveCollector implements BaseCollector {
   private checker: TikTokLiveCheckerFn;
 
   constructor(options?: TikTokLiveCollectorOptions) {
-    this.cookie = options?.cookie || '';
+    this.cookie = typeof options?.cookie === 'string' ? options.cookie.trim() : '';
     this.checker = options?.checker || checkTikTokLive;
+  }
+
+  setCookie(cookie: string): void {
+    this.cookie = typeof cookie === 'string' ? cookie.trim() : '';
   }
 
   async fetch(rawUsername: string): Promise<TikTokEvent[]> {

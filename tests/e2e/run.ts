@@ -5,7 +5,7 @@ import process from 'node:process';
 import { spawn } from 'node:child_process';
 
 interface TierDefinition {
-  id: '1' | '2' | '3' | '4' | 'android' | 'prod';
+  id: '1' | '2' | '3' | '4' | 'server' | 'android' | 'prod';
   label: string;
   files: string[];
 }
@@ -17,31 +17,52 @@ interface TapCounts {
   skipped: number;
 }
 
+const repoRoot = path.resolve(import.meta.dirname, '..', '..');
+
+function withOptionalFiles(requiredFiles: string[], optionalFiles: string[]): string[] {
+  const existingOptional = optionalFiles.filter((file) =>
+    fs.existsSync(path.resolve(repoRoot, file))
+  );
+  return [...requiredFiles, ...existingOptional];
+}
+
 const ALL_TIERS: TierDefinition[] = [
   {
     id: '1',
     label: 'Tier 1 (Feature Coverage)',
-    files: ['tests/e2e/tier1-features.test.ts'],
+    files: withOptionalFiles(
+      ['tests/e2e/tier1-features.test.ts'],
+      ['tests/e2e/tier1-r1r2r3.test.ts']
+    ),
   },
   {
     id: '2',
     label: 'Tier 2 (Boundary & Corner Cases)',
-    files: ['tests/e2e/tier2-boundaries.test.ts'],
+    files: withOptionalFiles(
+      ['tests/e2e/tier2-boundaries.test.ts'],
+      ['tests/e2e/tier2-r1r2r3.test.ts']
+    ),
   },
   {
     id: '3',
     label: 'Tier 3 (Cross-Feature Combinations)',
-    files: ['tests/e2e/tier3-combinations.test.ts'],
+    files: withOptionalFiles(
+      ['tests/e2e/tier3-combinations.test.ts'],
+      ['tests/e2e/tier3-r1r2r3.test.ts']
+    ),
   },
   {
     id: '4',
     label: 'Tier 4 (Real-World Scenarios)',
-    files: ['tests/e2e/tier4-scenarios.test.ts'],
+    files: withOptionalFiles(
+      ['tests/e2e/tier4-scenarios.test.ts'],
+      ['tests/e2e/tier4-r1r2r3.test.ts']
+    ),
   },
   {
-    id: 'prod',
-    label: 'Production Deployment & Cloud Infrastructure',
-    files: ['tests/e2e/productionDeployment.test.ts'],
+    id: 'server',
+    label: 'Server Integration (Access Control & Media Downloader)',
+    files: ['tests/e2e/accessControl.test.ts', 'tests/e2e/mediaDownloader.test.ts'],
   },
   {
     id: 'android',
@@ -51,6 +72,11 @@ const ALL_TIERS: TierDefinition[] = [
       'tests/e2e/androidSourceInvariants.test.ts',
     ],
   },
+  {
+    id: 'prod',
+    label: 'Production Deployment & Cloud Infrastructure',
+    files: ['tests/e2e/productionDeployment.test.ts'],
+  },
 ];
 
 function printUsage(): void {
@@ -59,10 +85,11 @@ function printUsage(): void {
       'PulseRadar <-> StreamRecorder E2E Test Runner',
       '',
       'Usage:',
-      '  node --import tsx tests/e2e/run.ts [--tier 1|2|3|4|android|prod|all] [--help]',
+      '  node --import tsx tests/e2e/run.ts [--tier 1|2|3|4|server|android|prod|all] [--help]',
       '',
       'Options:',
-      '  --tier <list>   Comma-separated tiers to run: 1, 2, 3, 4, android, prod, all (default: all)',
+      '  --tier <list>   Comma-separated tiers to run: 1, 2, 3, 4, server, android, prod, all',
+      '                  (default: all = local deterministic tiers 1,2,3,4,server,android; prod runs explicitly)',
       '  --help, -h      Show this help message',
       '',
       'Environment:',
@@ -88,7 +115,7 @@ function parseArgs(argv: string[]): { help: boolean; tiers: TierDefinition[] } |
     if (arg === '--tier') {
       const next = argv[i + 1];
       if (!next || next.startsWith('-')) {
-        console.error('Error: --tier requires a value (1|2|3|4|android|prod|all)');
+        console.error('Error: --tier requires a value (1|2|3|4|server|android|prod|all)');
         return null;
       }
       tierSpec = next;
@@ -118,7 +145,7 @@ function parseArgs(argv: string[]): { help: boolean; tiers: TierDefinition[] } |
   }
 
   if (tokens.includes('all')) {
-    return { help: false, tiers: [...ALL_TIERS] };
+    return { help: false, tiers: ALL_TIERS.filter((t) => t.id !== 'prod') };
   }
 
   const selected: TierDefinition[] = [];
@@ -126,7 +153,7 @@ function parseArgs(argv: string[]): { help: boolean; tiers: TierDefinition[] } |
   for (const tok of tokens) {
     const found = ALL_TIERS.find((t) => t.id === tok);
     if (!found) {
-      console.error(`Error: Invalid tier "${tok}". Expected one of: 1, 2, 3, 4, android, prod, all`);
+      console.error(`Error: Invalid tier "${tok}". Expected one of: 1, 2, 3, 4, server, android, prod, all`);
       return null;
     }
     if (!seen.has(found.id)) {
@@ -175,7 +202,11 @@ async function runTierProcess(
       ...tier.files,
     ];
 
-    const defaultStreamRecorderRoot = path.resolve(cwd, '..', 'StreamRecorder_Android');
+    const repoLocalStreamRecorderRoot = path.resolve(cwd, 'StreamRecorder_Android');
+    const parentStreamRecorderRoot = path.resolve(cwd, '..', 'StreamRecorder_Android');
+    const defaultStreamRecorderRoot = fs.existsSync(repoLocalStreamRecorderRoot)
+      ? repoLocalStreamRecorderRoot
+      : parentStreamRecorderRoot;
     const childEnv = {
       ...process.env,
       E2E_STREAM_RECORDER_ROOT:
@@ -221,7 +252,6 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const repoRoot = path.resolve(import.meta.dirname, '..', '..');
   const results: Array<{ tier: TierDefinition; exitCode: number; counts: TapCounts }> = [];
 
   for (const tier of parsed.tiers) {

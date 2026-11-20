@@ -9,8 +9,8 @@ const GUEST_TOKEN_LIFETIME_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 let guestTokenCache: { token: string; expiresAt: number } | null = null;
 
-function attachCookieHeaders(headers: Record<string, string>, xCookie: string): void {
-  const trimmed = xCookie.trim();
+function attachCookieHeaders(headers: Record<string, string>, xCookie: string = ''): void {
+  const trimmed = typeof xCookie === 'string' ? xCookie.trim() : '';
   if (!trimmed) return;
   headers.Cookie = trimmed;
   const ct0Match = trimmed.match(/ct0=([a-zA-Z0-9_-]+)/);
@@ -166,17 +166,18 @@ export async function checkXBroadcastById(
   xCookie = '',
   displayUsername?: string
 ): Promise<LiveCheckResult> {
+  const safeCookie = typeof xCookie === 'string' ? xCookie.trim() : '';
   const sourceUrl = `https://x.com/i/broadcasts/${broadcastId}`;
   const username = displayUsername || `broadcast_${broadcastId}`;
 
   try {
     let guestToken = await getOrRefreshGuestToken();
-    let res = await queryBroadcastApi(broadcastId, guestToken, xCookie);
+    let res = await queryBroadcastApi(broadcastId, guestToken, safeCookie);
 
     if (res.status === 401 || res.status === 403) {
       guestTokenCache = null;
       guestToken = await getOrRefreshGuestToken(true);
-      res = await queryBroadcastApi(broadcastId, guestToken, xCookie);
+      res = await queryBroadcastApi(broadcastId, guestToken, safeCookie);
     }
 
     if (res.status !== 200 || !res.body) {
@@ -213,7 +214,7 @@ export async function checkXBroadcastById(
 
     if (state.toUpperCase() === 'RUNNING') {
       if (mediaKey) {
-        const streamUrl = await queryLiveVideoStreamUrl(mediaKey, guestToken, xCookie);
+        const streamUrl = await queryLiveVideoStreamUrl(mediaKey, guestToken, safeCookie);
         if (streamUrl) {
           return {
             status: 'LIVE',
@@ -258,6 +259,7 @@ export async function checkXBroadcastById(
 }
 
 async function checkXUserLive(username: string, xCookie: string): Promise<LiveCheckResult> {
+  const safeCookie = typeof xCookie === 'string' ? xCookie.trim() : '';
   const profileUrl = `https://x.com/${encodeURIComponent(username)}`;
   try {
     const headers: Record<string, string> = {
@@ -265,7 +267,7 @@ async function checkXUserLive(username: string, xCookie: string): Promise<LiveCh
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9',
     };
-    attachCookieHeaders(headers, xCookie);
+    attachCookieHeaders(headers, safeCookie);
 
     const resp = await fetchWithTimeout(profileUrl, { headers, timeoutMs: 10000 });
     if (!resp.ok) {
@@ -275,7 +277,7 @@ async function checkXUserLive(username: string, xCookie: string): Promise<LiveCh
         username,
         sourceUrl: profileUrl,
         message: `HTTP ${resp.status} khi tải x.com/${username}${
-          !xCookie ? ' (Thử thêm X Cookie nếu bị giới hạn)' : ''
+          !safeCookie ? ' (Thử thêm X Cookie nếu bị giới hạn)' : ''
         }`,
         checkedAt: new Date().toISOString(),
       };
@@ -294,7 +296,7 @@ async function checkXUserLive(username: string, xCookie: string): Promise<LiveCh
 
     // Check up to 3 latest broadcasts
     for (const id of broadcastIds.slice(0, 3)) {
-      const res = await checkXBroadcastById(id, xCookie, username);
+      const res = await checkXBroadcastById(id, safeCookie, username);
       if (res.status === 'LIVE') {
         return res;
       }
@@ -321,17 +323,18 @@ async function checkXUserLive(username: string, xCookie: string): Promise<LiveCh
 
 export async function checkXLive(usernameOrUrl: string, xCookie = ''): Promise<LiveCheckResult> {
   const trimmed = usernameOrUrl.trim();
+  const safeCookie = typeof xCookie === 'string' ? xCookie.trim() : '';
 
   // 0. broadcast_ prefix
   if (trimmed.startsWith('broadcast_')) {
     const broadcastId = trimmed.slice('broadcast_'.length).trim();
-    return checkXBroadcastById(broadcastId, xCookie);
+    return checkXBroadcastById(broadcastId, safeCookie);
   }
 
   // 1. Direct broadcast URL
   const broadcastIdMatch = trimmed.match(/(?:x\.com|twitter\.com)\/i\/broadcasts\/([a-zA-Z0-9_-]+)/);
   if (broadcastIdMatch?.[1]) {
-    return checkXBroadcastById(broadcastIdMatch[1], xCookie);
+    return checkXBroadcastById(broadcastIdMatch[1], safeCookie);
   }
 
   // 2. Tweet link
@@ -339,13 +342,13 @@ export async function checkXLive(usernameOrUrl: string, xCookie = ''): Promise<L
   if (tweetMatch?.[2]) {
     const extractedBroadcastId = await resolveBroadcastIdFromTweet(tweetMatch[2]);
     if (extractedBroadcastId) {
-      return checkXBroadcastById(extractedBroadcastId, xCookie, tweetMatch[1]);
+      return checkXBroadcastById(extractedBroadcastId, safeCookie, tweetMatch[1]);
     }
   }
 
   // 3. Raw Broadcast ID (12-30 chars, no @ prefix, no spaces)
   if (!trimmed.startsWith('@') && /^[a-zA-Z0-9_-]{12,30}$/.test(trimmed)) {
-    const directCheck = await checkXBroadcastById(trimmed, xCookie);
+    const directCheck = await checkXBroadcastById(trimmed, safeCookie);
     if (directCheck.status === 'LIVE') {
       return directCheck;
     }
@@ -364,5 +367,5 @@ export async function checkXLive(usernameOrUrl: string, xCookie = ''): Promise<L
     };
   }
 
-  return checkXUserLive(username, xCookie);
+  return checkXUserLive(username, safeCookie);
 }

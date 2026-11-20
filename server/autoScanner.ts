@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import {
   isLiveUserTarget,
   parseSourceMeta,
@@ -71,6 +72,10 @@ interface ScanJob {
   livePlatform: LivePlatform;
 }
 
+function normalizeCookie(val: unknown): string {
+  return typeof val === 'string' ? val.trim() : '';
+}
+
 export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
   const {
     stateStore,
@@ -136,12 +141,22 @@ export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
     const ws = await stateStore.readWorkspaceState();
 
     const cookies: PlatformCookies = {
-      tiktok: ws.scannerSettings?.cookies?.tiktok || envCookies?.tiktok || process.env.TIKTOK_COOKIE || '',
+      tiktok:
+        normalizeCookie(ws.scannerSettings?.cookies?.tiktok) ||
+        normalizeCookie(envCookies?.tiktok) ||
+        normalizeCookie(process.env.TIKTOK_COOKIE),
       instagram:
-        ws.scannerSettings?.cookies?.instagram || envCookies?.instagram || process.env.INSTAGRAM_COOKIE || '',
+        normalizeCookie(ws.scannerSettings?.cookies?.instagram) ||
+        normalizeCookie(envCookies?.instagram) ||
+        normalizeCookie(process.env.INSTAGRAM_COOKIE),
       facebook:
-        ws.scannerSettings?.cookies?.facebook || envCookies?.facebook || process.env.FACEBOOK_COOKIE || '',
-      x: ws.scannerSettings?.cookies?.x || envCookies?.x || process.env.X_COOKIE || '',
+        normalizeCookie(ws.scannerSettings?.cookies?.facebook) ||
+        normalizeCookie(envCookies?.facebook) ||
+        normalizeCookie(process.env.FACEBOOK_COOKIE),
+      x:
+        normalizeCookie(ws.scannerSettings?.cookies?.x) ||
+        normalizeCookie(envCookies?.x) ||
+        normalizeCookie(process.env.X_COOKIE),
     };
 
     const jobsByKey = new Map<string, ScanJob>();
@@ -190,6 +205,7 @@ export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
       await stateStore.updateAndroidState(draft => {
         draft.liveStatusMap = {};
         draft.activeSessions = {};
+        draft.pendingRecordCommands = [];
         draft.scannerRuntime.lastScanAt = finishedIso;
         draft.scannerRuntime.lastScanDurationMs = durationMs;
       });
@@ -215,9 +231,10 @@ export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
     const deduplicateLive = ws.scannerSettings?.deduplicateLive ?? true;
 
     interface DispatchCandidate {
+      commandId: string;
       canonicalKey: string;
       streamUrl: string;
-      payload: AndroidRecordRequest;
+      payload: AndroidRecordRequest & { commandId: string };
     }
 
     const candidates: DispatchCandidate[] = [];
@@ -237,6 +254,11 @@ export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
         if (!jobsByKey.has(statusKey)) {
           delete draft.liveStatusMap[statusKey];
         }
+      }
+      if (Array.isArray(draft.pendingRecordCommands)) {
+        draft.pendingRecordCommands = draft.pendingRecordCommands.filter(c =>
+          jobsByKey.has(c.canonicalKey)
+        );
       }
 
       for (let i = 0; i < jobs.length; i++) {
@@ -316,15 +338,19 @@ export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
           continue;
         }
 
+        const commandId = `cmd_${crypto.randomUUID()}`;
+        const trimmedStreamUrl = res.streamUrl.trim();
         candidates.push({
+          commandId,
           canonicalKey: job.canonicalKey,
-          streamUrl: res.streamUrl.trim(),
+          streamUrl: trimmedStreamUrl,
           payload: {
-            eventId: `evt_${Math.floor(Date.now() / 1000)}_${job.canonicalUsername}`,
+            commandId,
+            eventId: `evt_${Date.now()}_${crypto.randomUUID().slice(0, 8)}_${job.canonicalUsername}`,
             platform: res.platform,
             username: job.canonicalUsername,
             usernameOrUrl: job.target,
-            streamUrl: res.streamUrl.trim(),
+            streamUrl: trimmedStreamUrl,
             title: res.title || `${res.platform} Live (@${job.canonicalUsername})`,
             sourceUrl: res.sourceUrl,
             ...(res.qualityInfo ? { qualityInfo: res.qualityInfo } : {}),
@@ -340,11 +366,15 @@ export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
         }
         const nowQueuedIso = new Date().toISOString();
         for (const candidate of candidates) {
+          draft.pendingRecordCommands = draft.pendingRecordCommands.filter(
+            cmd => !(cmd.canonicalKey === candidate.canonicalKey && cmd.streamUrl !== candidate.streamUrl)
+          );
           const alreadyQueued = draft.pendingRecordCommands.some(
             cmd => cmd.canonicalKey === candidate.canonicalKey && cmd.streamUrl === candidate.streamUrl
           );
           if (!alreadyQueued) {
             draft.pendingRecordCommands.push({
+              commandId: candidate.commandId,
               eventId: candidate.payload.eventId,
               canonicalKey: candidate.canonicalKey,
               platform: candidate.payload.platform,
@@ -357,6 +387,8 @@ export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
               ruleId: candidate.payload.ruleId,
               detectedAt: candidate.payload.detectedAt,
               queuedAt: nowQueuedIso,
+              deliveryAttempts: 0,
+              lastDeliveredAt: null,
             });
           }
         }
@@ -415,6 +447,23 @@ export function createAutoScanner(options: AutoScannerOptions): AutoScanner {
           if (dispatchRes.ok) {
             draft.activeSessions[candidate.canonicalKey] = candidate.streamUrl;
             draft.scannerRuntime.lastDispatchError = null;
+            if (Array.isArray(draft.pendingRecordCommands)) {
+              draft.pendingRecordCommands = draft.pendingRecordCommands.filter(
+                c =>
+                  c.commandId !== candidate.commandId &&
+                  !(c.canonicalKey === candidate.canonicalKey && c.streamUrl === candidate.streamUrl)
+              );
+            }
+            const acked = Array.isArray(draft.recentAckedCommandIds)
+              ? [...draft.recentAckedCommandIds]
+              : [];
+            if (!acked.includes(candidate.commandId)) {
+              acked.push(candidate.commandId);
+            }
+            if (candidate.payload.eventId && !acked.includes(candidate.payload.eventId)) {
+              acked.push(candidate.payload.eventId);
+            }
+            draft.recentAckedCommandIds = acked.slice(-200);
           } else {
             // Do NOT record activeSessions on failure so the next cycle retries
             draft.scannerRuntime.lastDispatchError = dispatchRes.error;

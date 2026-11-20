@@ -4,9 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const checkAndroidSource = process.env.E2E_CHECK_ANDROID_SOURCE === '1';
+const defaultStreamRecorderRoot = path.resolve(
+  import.meta.dirname,
+  '..',
+  '..',
+  'StreamRecorder_Android'
+);
 const streamRecorderRoot =
-  process.env.E2E_STREAM_RECORDER_ROOT ??
-  'c:\\Users\\tranm\\Documents\\antigravity\\elegant-einstein\\StreamRecorder';
+  process.env.E2E_STREAM_RECORDER_ROOT ?? defaultStreamRecorderRoot;
 const appSrcRoot = path.join(streamRecorderRoot, 'app', 'src', 'main', 'java', 'com', 'example', 'streamrecorder');
 
 const skipReason = !checkAndroidSource
@@ -202,5 +207,142 @@ test(
 
     const gradle = fs.readFileSync(gradlePath, 'utf8');
     assert.match(gradle, /applicationIdSuffix\s*=\s*"\.debug"/);
+  }
+);
+
+test(
+  'SI-06 (F3): AppPreferences.kt defaults to Render HTTPS URL and PulseRadarClient.kt uses 60s/65s cold-start timeouts',
+  { skip: skipReason },
+  () => {
+    const prefsPath = path.join(appSrcRoot, 'data', 'local', 'AppPreferences.kt');
+    const clientPath = path.join(appSrcRoot, 'service', 'PulseRadarClient.kt');
+    assert.equal(fs.existsSync(prefsPath), true, `Missing ${prefsPath}`);
+    assert.equal(fs.existsSync(clientPath), true, `Missing ${clientPath}`);
+
+    const prefsSrc = stripKotlinComments(fs.readFileSync(prefsPath, 'utf8'));
+    assert.match(
+      prefsSrc,
+      /DEFAULT_PULSE_RADAR_URL\s*=\s*"https:\/\/pulseradar-server\.onrender\.com"/
+    );
+
+    const clientSrc = stripKotlinComments(fs.readFileSync(clientPath, 'utf8'));
+    assert.match(
+      clientSrc,
+      /(DEFAULT_CONNECT_TIMEOUT_MS|connectTimeoutMs\s*:\s*Long)\s*=\s*60_000L/
+    );
+    assert.match(
+      clientSrc,
+      /(DEFAULT_READ_TIMEOUT_MS|readTimeoutMs\s*:\s*Long)\s*=\s*65_000L/
+    );
+  }
+);
+
+test(
+  'SI-07 (F5): AndroidManifest.xml declares Doze exemption permission and UI exposes battery optimization guidance',
+  { skip: skipReason },
+  () => {
+    const manifestPath = path.join(streamRecorderRoot, 'app', 'src', 'main', 'AndroidManifest.xml');
+    const settingsPath = path.join(appSrcRoot, 'ui', 'settings', 'SettingsScreen.kt');
+    const uiRoot = path.join(appSrcRoot, 'ui');
+    assert.equal(fs.existsSync(manifestPath), true, `Missing ${manifestPath}`);
+    assert.equal(fs.existsSync(settingsPath), true, `Missing ${settingsPath}`);
+    assert.equal(fs.existsSync(uiRoot), true, `Missing ${uiRoot}`);
+
+    const manifest = fs.readFileSync(manifestPath, 'utf8');
+    assert.equal(
+      manifest.includes('android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS'),
+      true,
+      'AndroidManifest.xml must declare android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS'
+    );
+
+    const collectKtFiles = (dir: string): string[] => {
+      const out: string[] = [];
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...collectKtFiles(full));
+        else if (entry.name.endsWith('.kt')) out.push(full);
+      }
+      return out;
+    };
+
+    const uiCombined = collectKtFiles(uiRoot)
+      .map((f) => stripKotlinComments(fs.readFileSync(f, 'utf8')))
+      .join('\n');
+
+    assert.equal(
+      uiCombined.includes('isIgnoringBatteryOptimizations'),
+      true,
+      'Android UI must check PowerManager.isIgnoringBatteryOptimizations'
+    );
+    assert.equal(
+      uiCombined.includes('ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS') ||
+        uiCombined.includes('ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS'),
+      true,
+      'Android UI must launch battery optimization exemption/settings intent'
+    );
+
+    const settingsSrc = stripKotlinComments(fs.readFileSync(settingsPath, 'utf8'));
+    assert.equal(
+      /isIgnoringBatteryOptimizations|BatteryOptimization/i.test(settingsSrc),
+      true,
+      'SettingsScreen.kt must expose battery optimization guidance'
+    );
+  }
+);
+
+test(
+  'SI-08 (F4): PulseRadarClient.kt implements 2-way ACK (/api/android/poll/ack, ackedCommandIds, commandId) and retry/backoff',
+  { skip: skipReason },
+  () => {
+    const clientPath = path.join(appSrcRoot, 'service', 'PulseRadarClient.kt');
+    assert.equal(fs.existsSync(clientPath), true, `Missing ${clientPath}`);
+    const clientSrc = stripKotlinComments(fs.readFileSync(clientPath, 'utf8'));
+
+    for (const token of ['/api/android/poll/ack', 'ackedCommandIds', 'commandId']) {
+      assert.equal(clientSrc.includes(token), true, `PulseRadarClient.kt missing ${token}`);
+    }
+    assert.match(clientSrc, /IOException/);
+    assert.match(clientSrc, /retry|backoff|executeWithRetry/i);
+    assert.match(clientSrc, /jitter|delayFn/i);
+  }
+);
+
+test(
+  'SI-09 (F6): SettingsScreen.kt uses Tactical Dark Linear* tokens and Active Polling 3s copy without legacy POST /record',
+  { skip: skipReason },
+  () => {
+    const settingsPath = path.join(appSrcRoot, 'ui', 'settings', 'SettingsScreen.kt');
+    assert.equal(fs.existsSync(settingsPath), true, `Missing ${settingsPath}`);
+    const settingsSrc = stripKotlinComments(fs.readFileSync(settingsPath, 'utf8'));
+
+    assert.equal(settingsSrc.includes('LinearBg'), true, 'SettingsScreen.kt must use LinearBg Tactical Dark token');
+    assert.equal(
+      settingsSrc.includes('LinearSurface') || settingsSrc.includes('LinearSurfaceElevated'),
+      true,
+      'SettingsScreen.kt must use LinearSurface* Tactical Dark token'
+    );
+    assert.equal(settingsSrc.includes('POST /record'), false, 'SettingsScreen.kt must remove legacy POST /record copy');
+    assert.equal(settingsSrc.includes('Chế độ Passive'), false, 'SettingsScreen.kt must remove legacy Chế độ Passive copy');
+    assert.equal(settingsSrc.includes('Active Polling'), true, 'SettingsScreen.kt must document Active Polling');
+    assert.match(settingsSrc, /3s|3 giây/);
+  }
+);
+
+test(
+  'SI-10 (F7): AppPreferences.kt defaults all 4 platform cookies to empty string "" (Guest Mode)',
+  { skip: skipReason },
+  () => {
+    const prefsPath = path.join(appSrcRoot, 'data', 'local', 'AppPreferences.kt');
+    assert.equal(fs.existsSync(prefsPath), true, `Missing ${prefsPath}`);
+    const prefsSrc = stripKotlinComments(fs.readFileSync(prefsPath, 'utf8'));
+
+    assert.match(prefsSrc, /DEFAULT_COOKIE\s*=\s*""/);
+    for (const field of ['tiktokCookie', 'instagramCookie', 'facebookCookie', 'xCookie']) {
+      assert.match(
+        prefsSrc,
+        new RegExp(`${field}\\s*:\\s*String\\s*=\\s*""`),
+        `AppSettings.${field} must default to ""`
+      );
+    }
   }
 );

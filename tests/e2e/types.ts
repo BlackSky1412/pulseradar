@@ -70,6 +70,76 @@ export interface SyncRequest {
   port?: number;
   reportedAt?: string;
   users: AndroidSyncUserInput[];
+  ackedCommandIds?: string[];
+  ackedEventIds?: string[];
+  ackedNotificationIds?: string[];
+}
+
+export interface PendingRecordCommand {
+  commandId: string;
+  eventId: string;
+  canonicalKey: string;
+  platform: CanonicalPlatform;
+  username: string;
+  usernameOrUrl: string;
+  streamUrl: string;
+  title: string;
+  sourceUrl: string;
+  qualityInfo: string;
+  ruleId: string;
+  detectedAt: string;
+  queuedAt: string;
+  deliveryAttempts: number;
+  lastDeliveredAt: string | null;
+}
+
+export interface PollNotification {
+  id: string;
+  type: string;
+  eventType: string;
+  platform: string;
+  username: string;
+  title?: string;
+  itemId?: string;
+  localPath?: string;
+  mediaUrls?: string[];
+  createdAt: string;
+}
+
+export interface PollRequest {
+  deviceId?: string;
+  ackedCommandIds?: string[];
+  ackedEventIds?: string[];
+  ackedNotificationIds?: string[];
+}
+
+export interface PollResponse {
+  ok: true;
+  serverTime: string;
+  commands: PendingRecordCommand[];
+  notifications: PollNotification[];
+}
+
+export interface PollAckResultItem {
+  commandId?: string;
+  eventId?: string;
+  status?: string;
+}
+
+export interface PollAckRequest {
+  deviceId?: string;
+  commandIds?: string[];
+  eventIds?: string[];
+  notificationIds?: string[];
+  results?: PollAckResultItem[];
+}
+
+export interface PollAckResponse {
+  ok: true;
+  ackedCount: number;
+  alreadyAckedCount: number;
+  remainingPendingCount: number;
+  serverTime: string;
 }
 
 export interface AuthoritativeUserItem {
@@ -323,6 +393,8 @@ export interface E2EHarness {
   putWorkspaceState(state: unknown): Promise<HttpJsonResult<{ ok: boolean; error?: string }>>;
   registerAndroid(payload: Record<string, unknown>): Promise<HttpJsonResult<RegisterResponse | ErrorResponse>>;
   syncAndroid(payload: Record<string, unknown>): Promise<HttpJsonResult<SyncResponse | ErrorResponse>>;
+  pollAndroid(payload?: PollRequest): Promise<HttpJsonResult<PollResponse | ErrorResponse>>;
+  ackAndroidPoll(payload: PollAckRequest): Promise<HttpJsonResult<PollAckResponse | ErrorResponse>>;
   simulateLiveUser(input: LiveSimulationInput): Promise<boolean>;
   tickScan(): Promise<boolean>;
   restartReferenceServer(): Promise<void>;

@@ -7,8 +7,10 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { startServer, type StartedServer } from '../server';
-import { createStateStore } from './stateStore';
+import { createStateStore, normalizeAndroidState } from './stateStore';
 import { createAndroidClient } from './androidClient';
+import { TikTokWatcher } from './watchers/tiktokWatcher';
+import { createWatcherStateStore } from './watchers/stateStore';
 import {
   canonicalizeUsername,
   extractAuthoritativeUsers,
@@ -163,11 +165,22 @@ test('T1: canonical normalization, rule extraction (44 workspace users, disabled
     '100064789123456'
   );
 
-  // Verify real workspace-state.json (read-only) extracts all 44 users cleanly
+  // Verify real workspace-state.json (read-only) has Guest mode empty cookies, servers, and 44 users
   const realWorkspacePath = path.join(PROJECT_ROOT, 'data', 'workspace-state.json');
   const realWorkspace = JSON.parse(fs.readFileSync(realWorkspacePath, 'utf-8')) as {
     rules: KeywordRuleItem[];
+    servers: unknown[];
+    scannerSettings: {
+      cookies: PlatformCookies;
+    };
   };
+  assert.deepEqual(realWorkspace.scannerSettings.cookies, {
+    tiktok: '',
+    instagram: '',
+    facebook: '',
+    x: '',
+  });
+  assert.ok(Array.isArray(realWorkspace.servers) && realWorkspace.servers.length >= 1);
   const realUsers = extractAuthoritativeUsers(realWorkspace.rules, {});
   assert.equal(realUsers.length, 44);
   assert.equal(realUsers.filter(u => u.platform === 'TIKTOK').length, 38);
@@ -1067,4 +1080,674 @@ test('T10: Regression — disabling or emptying rules clears stale activeSession
   const afterEmpty = await server.stateStore.readAndroidState();
   assert.deepEqual(afterEmpty.activeSessions, {});
   assert.deepEqual(afterEmpty.liveStatusMap, {});
+});
+
+test('T11: Non-destructive POST & GET /api/android/poll preserves pending commands/notifications across simulated dropped responses', async t => {
+  const dataDir = createTempDir(t);
+  const server = await startTestPulseRadar(t, dataDir);
+
+  await server.stateStore.updateAndroidState(draft => {
+    draft.pendingRecordCommands = [
+      {
+        commandId: 'cmd_poll_test_1',
+        eventId: 'evt_poll_test_1',
+        canonicalKey: 'TIKTOK::mixigaming',
+        platform: 'TIKTOK',
+        username: 'mixigaming',
+        usernameOrUrl: '@mixigaming',
+        streamUrl: 'https://cdn.example/mixi.flv',
+        title: 'Mixi Live',
+        sourceUrl: 'https://www.tiktok.com/@mixigaming/live',
+        queuedAt: new Date().toISOString(),
+        deliveryAttempts: 0,
+        lastDeliveredAt: null,
+      },
+    ];
+    draft.pendingNotifications = [
+      {
+        id: 'notif_poll_1',
+        type: 'MEDIA_DOWNLOADED',
+        eventType: 'post',
+        platform: 'TIKTOK',
+        username: 'mixigaming',
+        title: 'New Post',
+        itemId: 'post_1',
+        createdAt: new Date().toISOString(),
+      },
+    ];
+  });
+
+  // 1st POST poll (e.g. response dropped over CGNAT)
+  const poll1 = await fetch(`${server.url}/api/android/poll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'sm_n770f_default' }),
+  });
+  assert.equal(poll1.status, 200);
+  const body1 = (await poll1.json()) as {
+    ok: boolean;
+    commands: Array<{ commandId: string; deliveryAttempts: number; lastDeliveredAt: string | null }>;
+    notifications: Array<{ id: string }>;
+  };
+  assert.equal(body1.ok, true);
+  assert.equal(body1.commands.length, 1);
+  assert.equal(body1.commands[0].commandId, 'cmd_poll_test_1');
+  assert.equal(body1.commands[0].deliveryAttempts, 1);
+  assert.ok(typeof body1.commands[0].lastDeliveredAt === 'string');
+  assert.equal(body1.notifications.length, 1);
+
+  const stateAfter1 = await server.stateStore.readAndroidState();
+  assert.equal(stateAfter1.pendingRecordCommands.length, 1);
+  assert.equal(stateAfter1.pendingNotifications.length, 1);
+  assert.equal(stateAfter1.activeSessions['TIKTOK::mixigaming'], undefined);
+  assert.equal(stateAfter1.recentDispatches.length, 0);
+
+  // 2nd poll via GET (retry after dropped response)
+  const poll2 = await fetch(`${server.url}/api/android/poll?deviceId=sm_n770f_default`);
+  assert.equal(poll2.status, 200);
+  const body2 = (await poll2.json()) as {
+    commands: Array<{ commandId: string; deliveryAttempts: number }>;
+    notifications: Array<{ id: string }>;
+  };
+  assert.equal(body2.commands.length, 1);
+  assert.equal(body2.commands[0].commandId, 'cmd_poll_test_1');
+  assert.equal(body2.commands[0].deliveryAttempts, 2);
+  assert.equal(body2.notifications.length, 1);
+
+  // 3rd poll via POST
+  const poll3 = await fetch(`${server.url}/api/android/poll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'sm_n770f_default' }),
+  });
+  assert.equal(poll3.status, 200);
+  const body3 = (await poll3.json()) as {
+    commands: Array<{ commandId: string; deliveryAttempts: number }>;
+  };
+  assert.equal(body3.commands.length, 1);
+  assert.equal(body3.commands[0].deliveryAttempts, 3);
+
+  const stateAfter3 = await server.stateStore.readAndroidState();
+  assert.equal(stateAfter3.pendingRecordCommands.length, 1);
+  assert.equal(stateAfter3.activeSessions['TIKTOK::mixigaming'], undefined);
+});
+
+test('T12: POST /api/android/poll/ack locks activeSessions, supports results[] & notifications, is idempotent, and bounds recentAckedCommandIds to 200', async t => {
+  const dataDir = createTempDir(t);
+  const server = await startTestPulseRadar(t, dataDir);
+
+  await server.stateStore.updateAndroidState(draft => {
+    draft.pendingRecordCommands = [
+      {
+        commandId: 'cmd_ack_1',
+        eventId: 'evt_ack_1',
+        canonicalKey: 'TIKTOK::user_ack_1',
+        platform: 'TIKTOK',
+        username: 'user_ack_1',
+        usernameOrUrl: '@user_ack_1',
+        streamUrl: 'https://cdn.example/ack1.flv',
+        title: 'Ack 1 Live',
+        queuedAt: new Date().toISOString(),
+        deliveryAttempts: 2,
+      },
+      {
+        commandId: 'cmd_ack_2',
+        eventId: 'evt_ack_2',
+        canonicalKey: 'INSTAGRAM::user_ack_2',
+        platform: 'INSTAGRAM',
+        username: 'user_ack_2',
+        usernameOrUrl: '@user_ack_2',
+        streamUrl: 'https://cdn.example/ack2.mpd',
+        title: 'Ack 2 Live',
+        queuedAt: new Date().toISOString(),
+        deliveryAttempts: 1,
+      },
+    ];
+    draft.pendingNotifications = [
+      {
+        id: 'notif_ack_1',
+        type: 'MEDIA_DOWNLOADED',
+        eventType: 'story',
+        platform: 'TIKTOK',
+        username: 'user_ack_1',
+        title: 'Story',
+        itemId: 'st_1',
+        createdAt: new Date().toISOString(),
+      },
+    ];
+  });
+
+  const ackRes = await fetch(`${server.url}/api/android/poll/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: 'sm_n770f_default',
+      commandIds: ['cmd_ack_1'],
+      notificationIds: ['notif_ack_1'],
+      results: [{ eventId: 'evt_ack_2', status: 'RECORDING_STARTED' }],
+    }),
+  });
+  assert.equal(ackRes.status, 200);
+  const ackBody = (await ackRes.json()) as {
+    ok: boolean;
+    ackedCount: number;
+    alreadyAckedCount: number;
+    remainingPendingCount: number;
+    serverTime: string;
+  };
+  assert.equal(ackBody.ok, true);
+  assert.equal(ackBody.ackedCount, 2);
+  assert.equal(ackBody.alreadyAckedCount, 0);
+  assert.equal(ackBody.remainingPendingCount, 0);
+  assert.ok(typeof ackBody.serverTime === 'string');
+
+  const stateAfterAck = await server.stateStore.readAndroidState();
+  assert.equal(stateAfterAck.pendingRecordCommands.length, 0);
+  assert.equal(stateAfterAck.pendingNotifications.length, 0);
+  assert.equal(stateAfterAck.activeSessions['TIKTOK::user_ack_1'], 'https://cdn.example/ack1.flv');
+  assert.equal(stateAfterAck.activeSessions['INSTAGRAM::user_ack_2'], 'https://cdn.example/ack2.mpd');
+  assert.equal(stateAfterAck.recentDispatches.length, 2);
+  assert.equal(stateAfterAck.recentDispatches[0].androidStatus, 'RECORDING_STARTED');
+  assert.ok(stateAfterAck.recentAckedCommandIds?.includes('cmd_ack_1'));
+  assert.ok(stateAfterAck.recentAckedCommandIds?.includes('cmd_ack_2'));
+
+  // Duplicate ACK is idempotent and does not append duplicate recentDispatches
+  const dupAckRes = await fetch(`${server.url}/api/android/poll/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: 'sm_n770f_default',
+      commandIds: ['cmd_ack_1'],
+      results: [{ eventId: 'evt_ack_2', status: 'RECORDING_STARTED' }],
+    }),
+  });
+  assert.equal(dupAckRes.status, 200);
+  const dupAckBody = (await dupAckRes.json()) as {
+    ok: boolean;
+    ackedCount: number;
+    alreadyAckedCount: number;
+    remainingPendingCount: number;
+  };
+  assert.equal(dupAckBody.ok, true);
+  assert.equal(dupAckBody.ackedCount, 0);
+  assert.equal(dupAckBody.alreadyAckedCount, 2);
+  assert.equal(dupAckBody.remainingPendingCount, 0);
+
+  const stateAfterDup = await server.stateStore.readAndroidState();
+  assert.equal(stateAfterDup.recentDispatches.length, 2);
+
+  // Bounded max 200 check on recentAckedCommandIds
+  await server.stateStore.updateAndroidState(draft => {
+    draft.recentAckedCommandIds = Array.from({ length: 200 }, (_, i) => `cmd_old_${i}`);
+    draft.pendingRecordCommands = [
+      {
+        commandId: 'cmd_bound_200',
+        eventId: 'evt_bound_200',
+        canonicalKey: 'TIKTOK::bound_200',
+        platform: 'TIKTOK',
+        username: 'bound_200',
+        usernameOrUrl: '@bound_200',
+        streamUrl: 'https://cdn.example/bound.flv',
+        title: 'Bound Live',
+        queuedAt: new Date().toISOString(),
+      },
+    ];
+  });
+
+  const boundAckRes = await fetch(`${server.url}/api/android/poll/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: 'sm_n770f_default',
+      commandIds: ['cmd_bound_200'],
+    }),
+  });
+  assert.equal(boundAckRes.status, 200);
+  const boundedState = await server.stateStore.readAndroidState();
+  assert.equal(boundedState.recentAckedCommandIds?.length, 200);
+  assert.equal(boundedState.recentAckedCommandIds?.includes('cmd_old_0'), false);
+  assert.equal(boundedState.recentAckedCommandIds?.includes('cmd_bound_200'), true);
+});
+
+test('T13: Piggybacked ACKs on POST /api/android/poll and POST /api/android/sync + GET /api/android/status shape', async t => {
+  const dataDir = createTempDir(t);
+  const server = await startTestPulseRadar(t, dataDir);
+
+  await server.stateStore.updateAndroidState(draft => {
+    draft.pendingRecordCommands = [
+      {
+        commandId: 'cmd_piggy_a',
+        eventId: 'evt_piggy_a',
+        canonicalKey: 'TIKTOK::piggy_a',
+        platform: 'TIKTOK',
+        username: 'piggy_a',
+        usernameOrUrl: '@piggy_a',
+        streamUrl: 'https://cdn.example/a.flv',
+        title: 'Piggy A',
+        queuedAt: new Date().toISOString(),
+      },
+      {
+        commandId: 'cmd_piggy_b',
+        eventId: 'evt_piggy_b',
+        canonicalKey: 'TIKTOK::piggy_b',
+        platform: 'TIKTOK',
+        username: 'piggy_b',
+        usernameOrUrl: '@piggy_b',
+        streamUrl: 'https://cdn.example/b.flv',
+        title: 'Piggy B',
+        queuedAt: new Date().toISOString(),
+      },
+    ];
+    draft.pendingNotifications = [
+      {
+        id: 'notif_piggy_a',
+        type: 'MEDIA_DOWNLOADED',
+        eventType: 'post',
+        platform: 'TIKTOK',
+        username: 'piggy_a',
+        title: 'Notif A',
+        itemId: 'item_a',
+        createdAt: new Date().toISOString(),
+      },
+      {
+        id: 'notif_piggy_b',
+        type: 'MEDIA_DOWNLOADED',
+        eventType: 'story',
+        platform: 'TIKTOK',
+        username: 'piggy_b',
+        title: 'Notif B',
+        itemId: 'item_b',
+        createdAt: new Date().toISOString(),
+      },
+    ];
+  });
+
+  // Piggybacked ACK on POST /api/android/poll clears cmd_piggy_a and notif_piggy_a before returning cmd_piggy_b & notif_piggy_b
+  const pollRes = await fetch(`${server.url}/api/android/poll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: 'sm_n770f_default',
+      ackedCommandIds: ['cmd_piggy_a'],
+      ackedNotificationIds: ['notif_piggy_a'],
+    }),
+  });
+  assert.equal(pollRes.status, 200);
+  const pollBody = (await pollRes.json()) as {
+    commands: Array<{ commandId: string }>;
+    notifications: Array<{ id: string }>;
+  };
+  assert.deepEqual(pollBody.commands.map(c => c.commandId), ['cmd_piggy_b']);
+  assert.deepEqual(pollBody.notifications.map(n => n.id), ['notif_piggy_b']);
+
+  const afterPoll = await server.stateStore.readAndroidState();
+  assert.equal(afterPoll.activeSessions['TIKTOK::piggy_a'], 'https://cdn.example/a.flv');
+  assert.equal(afterPoll.activeSessions['TIKTOK::piggy_b'], undefined);
+
+  // Piggybacked ackedEventIds on POST /api/android/sync clears cmd_piggy_b and drains remaining pendingNotifications
+  const syncRes = await fetch(`${server.url}/api/android/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: 'sm_n770f_default',
+      users: [],
+      ackedEventIds: ['evt_piggy_b'],
+    }),
+  });
+  assert.equal(syncRes.status, 200);
+  const syncBody = (await syncRes.json()) as {
+    ok: boolean;
+    notifications: Array<{ id: string }>;
+  };
+  assert.equal(syncBody.ok, true);
+  assert.deepEqual(syncBody.notifications.map(n => n.id), ['notif_piggy_b']);
+
+  // Subsequent sync returns empty notifications (drained)
+  const syncRes2 = await fetch(`${server.url}/api/android/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: 'sm_n770f_default',
+      users: [],
+    }),
+  });
+  assert.equal(syncRes2.status, 200);
+  const syncBody2 = (await syncRes2.json()) as { notifications: unknown[] };
+  assert.equal(syncBody2.notifications.length, 0);
+
+  const afterSync = await server.stateStore.readAndroidState();
+  assert.equal(afterSync.pendingRecordCommands.length, 0);
+  assert.equal(afterSync.activeSessions['TIKTOK::piggy_b'], 'https://cdn.example/b.flv');
+  assert.ok(afterSync.recentAckedCommandIds?.includes('cmd_piggy_b'));
+
+  // GET /api/android/status shape preserved
+  const statusRes = await fetch(`${server.url}/api/android/status`);
+  assert.equal(statusRes.status, 200);
+  const statusBody = (await statusRes.json()) as {
+    ok: boolean;
+    device: Record<string, unknown> | null;
+    scanner: { enabled: boolean; running: boolean };
+  };
+  assert.equal(statusBody.ok, true);
+  assert.ok('device' in statusBody);
+  assert.equal(typeof statusBody.scanner.enabled, 'boolean');
+  assert.equal(typeof statusBody.scanner.running, 'boolean');
+});
+
+test('T14: TTL expiration pruning removes stale un-ACKed commands while keeping fresh commands', async t => {
+  const dataDir = createTempDir(t);
+  const server = await startTestPulseRadar(t, dataDir, { commandTtlMs: 60_000 });
+
+  await server.stateStore.updateAndroidState(draft => {
+    draft.pendingRecordCommands = [
+      {
+        commandId: 'cmd_expired',
+        eventId: 'evt_expired',
+        canonicalKey: 'TIKTOK::expired_user',
+        platform: 'TIKTOK',
+        username: 'expired_user',
+        usernameOrUrl: '@expired_user',
+        streamUrl: 'https://cdn.example/expired.flv',
+        title: 'Expired Live',
+        queuedAt: new Date(Date.now() - 120_000).toISOString(),
+      },
+      {
+        commandId: 'cmd_fresh',
+        eventId: 'evt_fresh',
+        canonicalKey: 'TIKTOK::fresh_user',
+        platform: 'TIKTOK',
+        username: 'fresh_user',
+        usernameOrUrl: '@fresh_user',
+        streamUrl: 'https://cdn.example/fresh.flv',
+        title: 'Fresh Live',
+        queuedAt: new Date().toISOString(),
+      },
+    ];
+  });
+
+  const pollRes = await fetch(`${server.url}/api/android/poll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'sm_n770f_default' }),
+  });
+  assert.equal(pollRes.status, 200);
+  const pollBody = (await pollRes.json()) as {
+    commands: Array<{ commandId: string }>;
+  };
+  assert.deepEqual(pollBody.commands.map(c => c.commandId), ['cmd_fresh']);
+
+  const stateAfter = await server.stateStore.readAndroidState();
+  assert.deepEqual(stateAfter.pendingRecordCommands.map(c => c.commandId), ['cmd_fresh']);
+  assert.equal(stateAfter.activeSessions['TIKTOK::expired_user'], undefined);
+});
+
+test('T15: POST /api/android/poll/ack enforces device whitelist (403) and payload validation (400)', async t => {
+  const dataDir = createTempDir(t);
+  const server = await startTestPulseRadar(t, dataDir);
+
+  await server.stateStore.updateAndroidState(draft => {
+    draft.allowedDeviceIds = ['sm_n770f_default'];
+  });
+
+  // 403 unauthorized device
+  const unauthRes = await fetch(`${server.url}/api/android/poll/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'rogue_phone', commandIds: ['cmd_1'] }),
+  });
+  assert.equal(unauthRes.status, 403);
+  const unauthBody = (await unauthRes.json()) as { ok: boolean };
+  assert.equal(unauthBody.ok, false);
+
+  // 400 malformed payloads
+  for (const badBody of [
+    [],
+    { deviceId: 123, commandIds: ['cmd_1'] },
+    { deviceId: 'sm_n770f_default' },
+    { deviceId: 'sm_n770f_default', commandIds: 'not-an-array' },
+    { deviceId: 'sm_n770f_default', results: ['bad_entry'] },
+  ]) {
+    const badRes = await fetch(`${server.url}/api/android/poll/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(badBody),
+    });
+    assert.equal(badRes.status, 400);
+  }
+});
+
+test('T16: normalizeAndroidState backfills legacy pendingRecordCommands commandId and caps recentAckedCommandIds at 200', async t => {
+  const dataDir = createTempDir(t);
+  const store = createStateStore(dataDir);
+
+  const legacyRaw = {
+    pendingRecordCommands: [
+      {
+        eventId: 'evt_legacy_1',
+        canonicalKey: 'TIKTOK::u1',
+        platform: 'TIKTOK',
+        username: 'u1',
+        usernameOrUrl: '@u1',
+        streamUrl: 'https://cdn.example/1.flv',
+        title: 'Legacy Live',
+        queuedAt: '2026-11-20T00:00:00.000Z',
+      },
+    ],
+    recentAckedCommandIds: Array.from({ length: 250 }, (_, i) => `ack_${i}`),
+  };
+
+  // Direct normalizeAndroidState call
+  const directNormalized = normalizeAndroidState(legacyRaw);
+  assert.equal(directNormalized.pendingRecordCommands[0].commandId, 'evt_legacy_1');
+  assert.equal(directNormalized.pendingRecordCommands[0].deliveryAttempts, 0);
+  assert.equal(directNormalized.pendingRecordCommands[0].lastDeliveredAt, null);
+  assert.equal(directNormalized.recentAckedCommandIds?.length, 200);
+  assert.equal(directNormalized.recentAckedCommandIds?.[0], 'ack_50');
+  assert.equal(directNormalized.recentAckedCommandIds?.[199], 'ack_249');
+
+  // Disk reload via StateStore.readAndroidState
+  await fs.promises.mkdir(path.dirname(store.androidFile), { recursive: true });
+  await fs.promises.writeFile(store.androidFile, JSON.stringify(legacyRaw), 'utf-8');
+  const fromDisk = await store.readAndroidState();
+  assert.equal(fromDisk.pendingRecordCommands[0].commandId, 'evt_legacy_1');
+  assert.equal(fromDisk.recentAckedCommandIds?.length, 200);
+});
+
+test('T17: AutoScanner cmd_ generation, direct LAN push cleanup, NOT_LIVE/rule pruning, and Guest mode empty/whitespace cookies', async t => {
+  const envKeys = ['TIKTOK_COOKIE', 'INSTAGRAM_COOKIE', 'FACEBOOK_COOKIE', 'X_COOKIE'] as const;
+  const savedEnv: Record<string, string | undefined> = {};
+  for (const k of envKeys) {
+    savedEnv[k] = process.env[k];
+    delete process.env[k];
+  }
+  t.after(() => {
+    for (const k of envKeys) {
+      if (savedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedEnv[k];
+    }
+  });
+
+  // 1) No registered device + Guest mode whitespace/empty cookies -> queued with cmd_... and normalized cookies
+  const dataDir1 = createTempDir(t);
+  let capturedCookies: PlatformCookies = {};
+  let liveFlag = true;
+  const server1 = await startTestPulseRadar(t, dataDir1, {
+    liveCheckBatchFn: async (targets: BatchLiveTarget[], cookies: PlatformCookies = {}): Promise<BatchLiveCheckItem[]> => {
+      capturedCookies = cookies;
+      return targets.map(item => ({
+        target: item.target,
+        ruleId: item.ruleId,
+        result: liveFlag
+          ? {
+              status: 'LIVE',
+              platform: 'TIKTOK',
+              username: 'guest_user',
+              title: 'Guest Live',
+              streamUrl: 'https://cdn.example/guest.flv',
+              sourceUrl: 'https://www.tiktok.com/@guest_user/live',
+              checkedAt: new Date().toISOString(),
+            }
+          : {
+              status: 'NOT_LIVE',
+              platform: 'TIKTOK',
+              username: 'guest_user',
+              sourceUrl: 'https://www.tiktok.com/@guest_user/live',
+              checkedAt: new Date().toISOString(),
+            },
+      }));
+    },
+  });
+
+  await server1.stateStore.writeWorkspaceState({
+    rules: [makeRule({ id: 'rule_guest', keyword: '@guest_user', platforms: 'reddit', enabled: true })],
+    scannerSettings: {
+      cookies: { tiktok: '', instagram: '   ', facebook: '', x: '' },
+      pollIntervalSeconds: 30,
+      deduplicateLive: true,
+    },
+  });
+
+  await server1.autoScanner.runOnce();
+  assert.deepEqual(capturedCookies, { tiktok: '', instagram: '', facebook: '', x: '' });
+
+  const stateQueued = await server1.stateStore.readAndroidState();
+  assert.equal(stateQueued.pendingRecordCommands.length, 1);
+  assert.match(stateQueued.pendingRecordCommands[0].commandId || '', /^cmd_/);
+  assert.equal(stateQueued.activeSessions['TIKTOK::guest_user'], undefined);
+
+  // Poll delivers queued command
+  const pollRes = await fetch(`${server1.url}/api/android/poll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'sm_n770f_default' }),
+  });
+  const pollBody = (await pollRes.json()) as { commands: Array<{ commandId: string }> };
+  assert.equal(pollBody.commands.length, 1);
+  assert.equal(pollBody.commands[0].commandId, stateQueued.pendingRecordCommands[0].commandId);
+
+  // NOT_LIVE prunes pendingRecordCommands
+  liveFlag = false;
+  await server1.autoScanner.runOnce();
+  const statePruned = await server1.stateStore.readAndroidState();
+  assert.equal(statePruned.pendingRecordCommands.length, 0);
+
+  // 2) Direct LAN push 202 cleans up pendingRecordCommands so /api/android/poll returns []
+  const dataDir2 = createTempDir(t);
+  const receiver = await createMockAndroidReceiver();
+  t.after(() => receiver.close());
+
+  const server2 = await startTestPulseRadar(t, dataDir2, {
+    liveCheckBatchFn: async (targets: BatchLiveTarget[]): Promise<BatchLiveCheckItem[]> =>
+      targets.map(item => ({
+        target: item.target,
+        ruleId: item.ruleId,
+        result: {
+          status: 'LIVE',
+          platform: 'TIKTOK',
+          username: 'lan_user',
+          title: 'LAN Live',
+          streamUrl: 'https://cdn.example/lan.flv',
+          sourceUrl: 'https://www.tiktok.com/@lan_user/live',
+          checkedAt: new Date().toISOString(),
+        },
+      })),
+  });
+
+  await server2.stateStore.writeWorkspaceState({
+    rules: [makeRule({ id: 'rule_lan', keyword: '@lan_user', platforms: 'reddit', enabled: true })],
+  });
+  await fetch(`${server2.url}/api/android/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: 'sm_lan', ip: '127.0.0.1', port: receiver.port }),
+  });
+
+  const lanScan = await server2.autoScanner.runOnce();
+  assert.equal(lanScan.dispatchedCount, 1);
+  assert.equal(receiver.requests.length, 1);
+  assert.match(String(receiver.requests[0].body.commandId || ''), /^cmd_/);
+
+  const stateAfterLan = await server2.stateStore.readAndroidState();
+  assert.equal(stateAfterLan.pendingRecordCommands.length, 0);
+  assert.equal(stateAfterLan.activeSessions['TIKTOK::lan_user'], 'https://cdn.example/lan.flv');
+  assert.ok(stateAfterLan.recentAckedCommandIds?.includes(String(receiver.requests[0].body.commandId)));
+
+  const lanPollRes = await fetch(`${server2.url}/api/android/poll?deviceId=sm_lan`);
+  const lanPollBody = (await lanPollRes.json()) as { commands: unknown[] };
+  assert.equal(lanPollBody.commands.length, 0);
+});
+
+test('T18: PUT /api/workspace-state clearing TikTok cookie to "" propagates Guest mode to TikTokWatcher collectors', async t => {
+  const dataDir = createTempDir(t);
+  const watcherStore = createWatcherStateStore(path.join(dataDir, 'watcher-state.json'));
+  const watcher = new TikTokWatcher({
+    config: {
+      targetUsers: ['guest_watcher_user'],
+      enableWarmup: false,
+      staggerRangeMs: [0, 0],
+      tiktokSessionId: '',
+    },
+    stateStore: watcherStore,
+  });
+
+  const server = await startTestPulseRadar(t, dataDir, {
+    watcher,
+    watcherStateStore: watcherStore,
+  });
+
+  const capturedHeaders: Array<Record<string, string>> = [];
+  const origFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = origFetch;
+  });
+
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const hdrs: Record<string, string> = {};
+    if (init?.headers && typeof init.headers === 'object' && !Array.isArray(init.headers)) {
+      for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+        hdrs[k.toLowerCase()] = String(v);
+      }
+    }
+    capturedHeaders.push(hdrs);
+    return new Response('<html></html>', { status: 200 });
+  }) as typeof fetch;
+
+  // Set non-empty cookie via PUT /api/workspace-state
+  const putSetRes = await origFetch(`${server.url}/api/workspace-state`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rules: [makeRule({ id: 'rule_tt', keyword: '@guest_watcher_user', platforms: 'reddit', enabled: true })],
+      scannerSettings: {
+        cookies: { tiktok: 'tt_active_123', instagram: '', facebook: '', x: '' },
+        pollIntervalSeconds: 30,
+        deduplicateLive: true,
+      },
+    }),
+  });
+  assert.equal(putSetRes.status, 200);
+
+  await watcher.runCycle('post');
+  assert.ok(capturedHeaders.length >= 1);
+  assert.equal(capturedHeaders[0].cookie, 'sessionid=tt_active_123');
+
+  // Clear cookie back to "" via PUT /api/workspace-state -> must clear collector cookie too
+  capturedHeaders.length = 0;
+  const putClearRes = await origFetch(`${server.url}/api/workspace-state`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rules: [makeRule({ id: 'rule_tt', keyword: '@guest_watcher_user', platforms: 'reddit', enabled: true })],
+      scannerSettings: {
+        cookies: { tiktok: '', instagram: '', facebook: '', x: '' },
+        pollIntervalSeconds: 30,
+        deduplicateLive: true,
+      },
+    }),
+  });
+  assert.equal(putClearRes.status, 200);
+
+  await watcher.runCycle('post');
+  assert.ok(capturedHeaders.length >= 1);
+  assert.equal(capturedHeaders[0].cookie, undefined);
 });

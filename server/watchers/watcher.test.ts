@@ -543,3 +543,104 @@ test('TikTokWatcher: sleepOrAbort cleans up abort listeners without memory leak 
     process.off('warning', warningHandler);
   }
 });
+
+test('TikTokWatcher: updateConfig({ tiktokSessionId: "" }) propagates Guest mode to live, post, and story collectors', async () => {
+  const testFile = path.join(TEST_DIR, 'watcher-guest-cookie-prop.json');
+  const store = createWatcherStateStore(testFile);
+
+  const capturedHeaders: Array<{ url: string; cookie: string | undefined }> = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    let cookie: string | undefined;
+    if (init?.headers && typeof init.headers === 'object' && !Array.isArray(init.headers)) {
+      for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+        if (k.toLowerCase() === 'cookie') {
+          cookie = String(v);
+        }
+      }
+    }
+    capturedHeaders.push({ url, cookie });
+    return new Response('<html></html>', { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const watcher = new TikTokWatcher({
+      config: {
+        targetUsers: ['guest_creator'],
+        enableWarmup: false,
+        staggerRangeMs: [0, 0],
+        tiktokSessionId: 'initial_session_123',
+      },
+      stateStore: store,
+    });
+
+    await watcher.runCycle('live');
+    await watcher.runCycle('post');
+    await watcher.runCycle('story');
+
+    assert.ok(capturedHeaders.length >= 3);
+    assert.ok(
+      capturedHeaders.every(r => r.cookie === 'sessionid=initial_session_123'),
+      'All collectors must send initial session cookie before clearing'
+    );
+
+    capturedHeaders.length = 0;
+    watcher.updateConfig({ tiktokSessionId: '' });
+
+    await watcher.runCycle('live');
+    await watcher.runCycle('post');
+    await watcher.runCycle('story');
+
+    assert.ok(capturedHeaders.length >= 3);
+    assert.ok(
+      capturedHeaders.every(r => r.cookie === undefined),
+      'All collectors must omit Cookie header after updateConfig({ tiktokSessionId: "" })'
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('TikTokPostCollector, TikTokStoryCollector & TikTokLiveCollector: empty/whitespace/undefined cookie safety', async () => {
+  const capturedCookies: Array<string | undefined> = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    let cookie: string | undefined;
+    if (init?.headers && typeof init.headers === 'object' && !Array.isArray(init.headers)) {
+      for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+        if (k.toLowerCase() === 'cookie') {
+          cookie = String(v);
+        }
+      }
+    }
+    capturedCookies.push(cookie);
+    return new Response('<html></html>', { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const postCollector = new TikTokPostCollector({ cookie: '   ' });
+    const storyCollector = new TikTokStoryCollector({ cookie: '   ' });
+    const liveCollector = new TikTokLiveCollector({ cookie: '   ' });
+
+    await postCollector.fetch('guest_user');
+    await storyCollector.fetch('guest_user');
+    await liveCollector.fetch('guest_user');
+
+    postCollector.setCookie('');
+    storyCollector.setCookie(undefined as unknown as string);
+    liveCollector.setCookie('   ');
+
+    await postCollector.fetch('guest_user');
+    await storyCollector.fetch('guest_user');
+    await liveCollector.fetch('guest_user');
+
+    assert.ok(capturedCookies.length >= 6);
+    assert.ok(
+      capturedCookies.every(c => c === undefined),
+      'Collectors must never emit Cookie headers for empty, whitespace, or undefined cookies'
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
