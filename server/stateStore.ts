@@ -7,6 +7,7 @@ import type {
   PlatformCookies,
   WebhookServerItem,
 } from '../src/utils/scannerEngine';
+import type { PendingDeviceNotification } from './watchers/types';
 
 export interface ScannerSettingsState {
   cookies: Required<PlatformCookies>;
@@ -92,6 +93,8 @@ export interface AndroidState {
   activeSessions: Record<string, string>;
   scannerRuntime: AndroidScannerRuntime;
   recentDispatches: AndroidDispatchLog[];
+  pendingNotifications: PendingDeviceNotification[];
+  allowedDeviceIds: string[];
   updatedAt: string;
 }
 
@@ -146,6 +149,10 @@ export function createDefaultAndroidState(): AndroidState {
       lastDispatchAt: null,
     },
     recentDispatches: [],
+    pendingNotifications: [],
+    allowedDeviceIds: process.env.ALLOWED_DEVICE_IDS
+      ? process.env.ALLOWED_DEVICE_IDS.split(',').map(s => s.trim()).filter(Boolean)
+      : ['*'],
     updatedAt: new Date(0).toISOString(),
   };
 }
@@ -222,6 +229,14 @@ function normalizeAndroidState(raw: unknown): AndroidState {
         typeof obj.scannerRuntime?.lastDispatchAt === 'string' ? obj.scannerRuntime.lastDispatchAt : null,
     },
     recentDispatches: Array.isArray(obj.recentDispatches) ? obj.recentDispatches.slice(0, 50) : [],
+    pendingNotifications: Array.isArray(obj.pendingNotifications)
+      ? obj.pendingNotifications.slice(0, 100)
+      : [],
+    allowedDeviceIds: Array.isArray(obj.allowedDeviceIds)
+      ? obj.allowedDeviceIds.filter(id => typeof id === 'string' && id.trim())
+      : process.env.ALLOWED_DEVICE_IDS
+        ? process.env.ALLOWED_DEVICE_IDS.split(',').map(s => s.trim()).filter(Boolean)
+        : ['*'],
     updatedAt: typeof obj.updatedAt === 'string' ? obj.updatedAt : def.updatedAt,
   };
 }
@@ -342,6 +357,12 @@ export function createStateStore(dataDir: string): StateStore {
           activeSessions: { ...current.activeSessions },
           scannerRuntime: { ...current.scannerRuntime },
           recentDispatches: [...current.recentDispatches],
+          pendingNotifications: Array.isArray(current.pendingNotifications)
+            ? [...current.pendingNotifications]
+            : [],
+          allowedDeviceIds: Array.isArray(current.allowedDeviceIds)
+            ? [...current.allowedDeviceIds]
+            : ['sm_n770f_default'],
           updatedAt: current.updatedAt,
         };
         const mutated = mutator(clone);

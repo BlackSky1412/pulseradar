@@ -59,6 +59,8 @@ export interface WatcherConfig {
   proxyUrl?: string;
   enableWarmup?: boolean;
   androidCallbackUrl?: string;
+  autoDownloadMedia?: boolean;
+  driveStorageRoot?: string;
   staggerRangeMs?: [number, number];
 }
 
@@ -88,3 +90,19 @@ export interface NotificationResult {
   httpStatus?: number;
   error?: string | null;
 }
+
+export interface PendingDeviceNotification {
+  id: string;
+  type: 'POST_DOWNLOADED' | 'STORY_DOWNLOADED' | 'RECORD_TRIGGER' | 'MEDIA_DOWNLOADED';
+  eventType: WatcherEventType;
+  platform: string;
+  username: string;
+  title: string;
+  itemId: string;
+  sourceUrl?: string;
+  mediaPath?: string;
+  fileName?: string;
+  fileSize?: number;
+  createdAt: string;
+}
+

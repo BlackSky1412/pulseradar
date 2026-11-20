@@ -4,6 +4,7 @@ import { TikTokPostCollector } from './collectors/tiktokPost';
 import { TikTokStoryCollector } from './collectors/tiktokStory';
 import { Notifier } from './notifier';
 import { createWatcherStateStore, WatcherStateStore } from './stateStore';
+import { createMediaDownloader, MediaDownloader } from '../mediaDownloader';
 import type {
   CollectorHealthRecord,
   NotificationResult,
@@ -38,6 +39,7 @@ export interface TikTokWatcherOptions {
   config: WatcherConfig;
   stateStore?: WatcherStateStore;
   notifier?: Notifier;
+  mediaDownloader?: MediaDownloader;
   liveCollector?: BaseCollector;
   postCollector?: BaseCollector;
   storyCollector?: BaseCollector;
@@ -51,6 +53,7 @@ export class TikTokWatcher {
   private config: WatcherConfig;
   private stateStore: WatcherStateStore;
   private notifier: Notifier;
+  private mediaDownloader: MediaDownloader;
 
   private collectors: Record<WatcherEventType, BaseCollector>;
   private isRunningState = false;
@@ -66,6 +69,9 @@ export class TikTokWatcher {
   constructor(options: TikTokWatcherOptions) {
     this.config = { ...options.config };
     this.stateStore = options.stateStore || createWatcherStateStore();
+    this.mediaDownloader =
+      options.mediaDownloader ||
+      createMediaDownloader({ storageRoot: this.config.driveStorageRoot });
     this.notifier =
       options.notifier ||
       new Notifier({
@@ -173,6 +179,26 @@ export class TikTokWatcher {
 
           if (isNew) {
             report.newEventsFound++;
+
+            // Auto-download media for new Post or Story events into Google Drive folder
+            if (
+              (eventType === 'post' || eventType === 'story') &&
+              this.config.autoDownloadMedia !== false
+            ) {
+              try {
+                const downloadResult = await this.mediaDownloader.downloadEventMedia(event);
+                event.metadata = {
+                  ...event.metadata,
+                  downloadedMedia: downloadResult,
+                };
+              } catch (dlErr) {
+                console.warn(
+                  `[TikTokWatcher] Failed to auto-download media for @${username} ${eventType} ${event.itemId}:`,
+                  dlErr
+                );
+              }
+            }
+
             const notifResult: NotificationResult = await this.notifier.notify(event);
             if (notifResult.status === 'delivered') {
               report.notificationsDispatched++;

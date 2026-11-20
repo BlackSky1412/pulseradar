@@ -28,5 +28,14 @@ data/android-state.json
 .antigravity/
 .vscode/
 
+# Android build & local files
+.gradle/
+**/build/
+local.properties
+*.apk
+
+# Android companion source & binaries (packaged in Google Drive)
+StreamRecorder_Android/
+
 nul
 

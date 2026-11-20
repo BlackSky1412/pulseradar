@@ -1,6 +1,7 @@
 import { fetchWithTimeout } from '../liveCheckers/httpClient';
 import type {
   NotificationResult,
+  PendingDeviceNotification,
   SystemAlertPayload,
   TikTokEvent,
   WebhookEventPayload,
@@ -22,6 +23,7 @@ export interface NotifierOptions {
   timeoutMs?: number;
   retryDelaysMs?: number[];
   fetchFn?: CustomFetchFn;
+  onPendingNotification?: (notif: PendingDeviceNotification) => Promise<void> | void;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -34,12 +36,14 @@ export class Notifier {
   private timeoutMs: number;
   private retryDelaysMs: number[];
   private fetchFn: CustomFetchFn;
+  private onPendingNotification?: (notif: PendingDeviceNotification) => Promise<void> | void;
 
   constructor(options?: NotifierOptions) {
     this.webhookUrl = options?.webhookUrl;
     this.androidCallbackUrl = options?.androidCallbackUrl;
     this.timeoutMs = options?.timeoutMs ?? 10000;
     this.retryDelaysMs = options?.retryDelaysMs ?? [1000, 2000, 4000];
+    this.onPendingNotification = options?.onPendingNotification;
     this.fetchFn =
       options?.fetchFn ||
       (async (url, opts) => {
@@ -91,6 +95,43 @@ export class Notifier {
       });
     }
 
+    // Android device notification for new Post or Story (with downloaded media info)
+    if (event.eventType === 'post' || event.eventType === 'story') {
+      const downloaded = event.metadata?.downloadedMedia as
+        | { files?: Array<{ path: string; fileName: string; fileSize: number }> }
+        | undefined;
+      const primaryFile = downloaded?.files?.[0];
+
+      const deviceNotif: PendingDeviceNotification = {
+        id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        type: event.eventType === 'story' ? 'STORY_DOWNLOADED' : 'POST_DOWNLOADED',
+        eventType: event.eventType,
+        platform: 'TIKTOK',
+        username: event.username,
+        title: event.title || `New ${event.eventType} from @${event.username}`,
+        itemId: event.itemId,
+        sourceUrl: event.url,
+        mediaPath: primaryFile?.path,
+        fileName: primaryFile?.fileName,
+        fileSize: primaryFile?.fileSize,
+        createdAt: new Date().toISOString(),
+      };
+
+      if (this.onPendingNotification) {
+        try {
+          await this.onPendingNotification(deviceNotif);
+        } catch (err) {
+          console.warn('[Notifier] Failed to queue pending notification:', err);
+        }
+      }
+
+      if (this.androidCallbackUrl) {
+        await this.dispatchNotificationToAndroid(deviceNotif).catch((err) => {
+          console.warn(`[Notifier] Android direct notification dispatch error for @${event.username}:`, err);
+        });
+      }
+    }
+
     return webhookResult;
   }
 
@@ -133,6 +174,24 @@ export class Notifier {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(androidPayload),
+      timeoutMs: this.timeoutMs,
+    });
+  }
+
+  private async dispatchNotificationToAndroid(notif: PendingDeviceNotification): Promise<void> {
+    if (!this.androidCallbackUrl) return;
+
+    // Use /notify endpoint on companion if callback ends in /record, otherwise use raw callback
+    const notifyUrl = this.androidCallbackUrl.includes('/record')
+      ? this.androidCallbackUrl.replace(/\/record\/?$/, '/notify')
+      : `${this.androidCallbackUrl.replace(/\/+$/, '')}/notify`;
+
+    await this.fetchFn(notifyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(notif),
       timeoutMs: this.timeoutMs,
     });
   }

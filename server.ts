@@ -46,6 +46,9 @@ import {
   TikTokWatcher,
   type TikTokWatcherOptions,
 } from './server/watchers/tiktokWatcher';
+import { Notifier } from './server/watchers/notifier';
+import { resolveDriveStorageRoot } from './server/mediaDownloader';
+import type { PendingDeviceNotification } from './server/watchers/types';
 import {
   createAndroidClient,
   type AndroidClient,
@@ -418,6 +421,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
     options.watcherStateStore ??
     createWatcherStateStore(path.resolve(dataDir, 'watcher-state.json'));
 
+  const driveStorageRoot = resolveDriveStorageRoot();
+
   const watcher =
     options.watcher ??
     new TikTokWatcher({
@@ -428,8 +433,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         storyIntervalSeconds: 360,
         enableWarmup: true,
         tiktokSessionId: options.envCookies?.tiktok,
+        autoDownloadMedia: true,
+        driveStorageRoot,
       },
       stateStore: watcherStateStore,
+      notifier: new Notifier({
+        onPendingNotification: async notif => {
+          await stateStore.updateAndroidState(st => {
+            if (!Array.isArray(st.pendingNotifications)) {
+              st.pendingNotifications = [];
+            }
+            st.pendingNotifications.push(notif);
+            if (st.pendingNotifications.length > 100) {
+              st.pendingNotifications = st.pendingNotifications.slice(-100);
+            }
+          });
+        },
+      }),
     });
 
   // Synchronize initial target users and watcher configuration from workspace state
@@ -529,6 +549,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         return;
       }
 
+      const existingAndroidState = await stateStore.readAndroidState();
+      const explicitDeviceId =
+        typeof req.body.deviceId === 'string' ? req.body.deviceId.trim() : '';
+      const candidateDeviceId = explicitDeviceId || existingAndroidState.device?.deviceId || 'sm_n770f_default';
+      const allowedIds = existingAndroidState.allowedDeviceIds || ['sm_n770f_default'];
+      if (allowedIds.length > 0 && !allowedIds.includes('*') && !allowedIds.includes(candidateDeviceId)) {
+        res.status(403).json({ ok: false, error: 'Device not authorized' });
+        return;
+      }
+
       const nowIso = new Date().toISOString();
       const callbackUrl = `http://${ip}:${port}/record`;
       let registeredDeviceId = 'sm_n770f_default';
@@ -623,6 +653,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
       }
 
       const existingAndroidState = await stateStore.readAndroidState();
+      const candidateDeviceId =
+        (typeof req.body.deviceId === 'string' ? req.body.deviceId.trim() : '') ||
+        existingAndroidState.device?.deviceId ||
+        'sm_n770f_default';
+      const allowedIds = existingAndroidState.allowedDeviceIds || ['sm_n770f_default'];
+      if (allowedIds.length > 0 && !allowedIds.includes('*') && !allowedIds.includes(candidateDeviceId)) {
+        res.status(403).json({ ok: false, error: 'Device not authorized' });
+        return;
+      }
 
       // Validate explicit IP if supplied, otherwise fall back to socket/existing IP
       let resolvedIp: string | null = null;
@@ -802,9 +841,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         nowMs,
       });
 
+      let deliveredNotifications: PendingDeviceNotification[] = [];
+      await stateStore.updateAndroidState(draft => {
+        if (Array.isArray(draft.pendingNotifications) && draft.pendingNotifications.length > 0) {
+          deliveredNotifications = [...draft.pendingNotifications];
+          draft.pendingNotifications = [];
+        }
+      });
+
       res.status(200).json({
         ok: true,
         syncedAt: nowIso,
+        notifications: deliveredNotifications,
         ...reconcileResult,
       });
     } catch (error) {
@@ -812,6 +860,157 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         ok: false,
         error: error instanceof Error ? error.message : 'Failed to synchronize Android state',
       });
+    }
+  });
+
+  // 0d-1. Manual / Programmatic Android Push Notification Dispatch
+  app.post('/api/android/notify', async (req, res) => {
+    try {
+      const androidState = await stateStore.readAndroidState();
+      const notif: PendingDeviceNotification = {
+        id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        type: req.body?.type || 'MEDIA_DOWNLOADED',
+        eventType: req.body?.eventType || 'post',
+        platform: req.body?.platform || 'TIKTOK',
+        username: String(req.body?.username || ''),
+        title: String(req.body?.title || 'PulseRadar Notification'),
+        itemId: String(req.body?.itemId || ''),
+        sourceUrl: typeof req.body?.sourceUrl === 'string' ? req.body.sourceUrl : undefined,
+        mediaPath: typeof req.body?.mediaPath === 'string' ? req.body.mediaPath : undefined,
+        fileName: typeof req.body?.fileName === 'string' ? req.body.fileName : undefined,
+        fileSize: typeof req.body?.fileSize === 'number' ? req.body.fileSize : undefined,
+        createdAt: new Date().toISOString(),
+      };
+
+      let directDispatched = false;
+      if (androidState.device?.callbackUrl) {
+        const notifyUrl = androidState.device.callbackUrl.includes('/record')
+          ? androidState.device.callbackUrl.replace(/\/record\/?$/, '/notify')
+          : `${androidState.device.callbackUrl.replace(/\/+$/, '')}/notify`;
+        try {
+          const pushResp = await fetch(notifyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(notif),
+            signal: AbortSignal.timeout(3000),
+          });
+          directDispatched = pushResp.ok;
+        } catch {
+          // Direct push failed (normal if phone is behind NAT), fallback to 10-minute sync queue
+        }
+      }
+
+      await stateStore.updateAndroidState(draft => {
+        if (!Array.isArray(draft.pendingNotifications)) {
+          draft.pendingNotifications = [];
+        }
+        draft.pendingNotifications.push(notif);
+        if (draft.pendingNotifications.length > 100) {
+          draft.pendingNotifications = draft.pendingNotifications.slice(-100);
+        }
+      });
+
+      res.status(200).json({ ok: true, directDispatched, notification: notif });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // 0d-2. Downloaded Media Listing (Google Drive / Local Storage)
+  app.get('/api/media/downloaded', async (_req, res) => {
+    try {
+      const rootDir = resolveDriveStorageRoot();
+      const results: Array<{
+        username: string;
+        eventType: string;
+        fileName: string;
+        size: number;
+        mtime: string;
+        localPath: string;
+        downloadUrl: string;
+      }> = [];
+
+      if (fs.existsSync(rootDir)) {
+        const userDirs = fs.readdirSync(rootDir);
+        for (const user of userDirs) {
+          const userPath = path.join(rootDir, user);
+          if (!fs.statSync(userPath).isDirectory()) continue;
+          for (const type of ['posts', 'stories']) {
+            const typePath = path.join(userPath, type);
+            if (fs.existsSync(typePath) && fs.statSync(typePath).isDirectory()) {
+              const files = fs.readdirSync(typePath);
+              for (const f of files) {
+                const filePath = path.join(typePath, f);
+                const stat = fs.statSync(filePath);
+                if (stat.isFile()) {
+                  results.push({
+                    username: user,
+                    eventType: type,
+                    fileName: f,
+                    size: stat.size,
+                    mtime: stat.mtime.toISOString(),
+                    localPath: filePath,
+                    downloadUrl: `/api/media/file/${encodeURIComponent(user)}/${type}/${encodeURIComponent(f)}`,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+      res.json({ ok: true, storageRoot: rootDir, count: results.length, media: results });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // 0d-3. Safe Media Streaming & Download Route
+  app.get('/api/media/file/:username/:type/:filename', (req, res) => {
+    try {
+      const { username, type, filename } = req.params;
+      const rootDir = resolveDriveStorageRoot();
+      const safeUser = path.basename(username);
+      const safeType = path.basename(type);
+      const safeFile = path.basename(filename);
+      const targetPath = path.join(rootDir, safeUser, safeType, safeFile);
+
+      if (!fs.existsSync(targetPath)) {
+        res.status(404).json({ ok: false, error: 'File not found' });
+        return;
+      }
+
+      res.sendFile(targetPath);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // 0d-4. Security Device Whitelist Management
+  app.get('/api/security/device-whitelist', async (_req, res) => {
+    try {
+      const androidState = await stateStore.readAndroidState();
+      res.json({ ok: true, allowedDeviceIds: androidState.allowedDeviceIds || ['sm_n770f_default'] });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.put('/api/security/device-whitelist', async (req, res) => {
+    try {
+      if (!isPlainObject(req.body) || !Array.isArray(req.body.allowedDeviceIds)) {
+        res.status(400).json({ ok: false, error: 'allowedDeviceIds must be an array of string device IDs' });
+        return;
+      }
+      const cleaned = (req.body.allowedDeviceIds as unknown[])
+        .filter((id): id is string => typeof id === 'string' && Boolean(id.trim()))
+        .map(id => id.trim());
+
+      const updated = await stateStore.updateAndroidState(draft => {
+        draft.allowedDeviceIds = cleaned;
+      });
+      res.json({ ok: true, allowedDeviceIds: updated.allowedDeviceIds });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
   });
 
