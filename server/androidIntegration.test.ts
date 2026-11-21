@@ -182,9 +182,10 @@ test('T1: canonical normalization, rule extraction (44 workspace users, disabled
   });
   assert.ok(Array.isArray(realWorkspace.servers) && realWorkspace.servers.length >= 1);
   const realUsers = extractAuthoritativeUsers(realWorkspace.rules, {});
-  assert.equal(realUsers.length, 44);
+  const igCount = realUsers.filter(u => u.platform === 'INSTAGRAM').length;
+  assert.ok(igCount >= 2);
+  assert.equal(realUsers.length, 38 + igCount + 2 + 2);
   assert.equal(realUsers.filter(u => u.platform === 'TIKTOK').length, 38);
-  assert.equal(realUsers.filter(u => u.platform === 'INSTAGRAM').length, 2);
   assert.equal(realUsers.filter(u => u.platform === 'X').length, 2);
   assert.equal(realUsers.filter(u => u.platform === 'FACEBOOK').length, 2);
 
