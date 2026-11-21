@@ -54,6 +54,7 @@ import {
   MultiPlatformWatcher,
   type MultiPlatformWatcherOptions,
 } from './server/watchers/multiPlatformWatcher';
+import { instagramUserIdCache } from './server/watchers/collectors/instagramShared';
 import { Notifier } from './server/watchers/notifier';
 import { resolveDriveStorageRoot } from './server/mediaDownloader';
 import { createStorageManager } from './server/storage/index';
@@ -740,6 +741,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         postIntervalSeconds: platformsCfg.tiktok?.postIntervalSeconds,
         storyIntervalSeconds: platformsCfg.tiktok?.storyIntervalSeconds,
       } as any);
+    }
+    if (initialState?.targetProfiles) {
+      for (const [key, profile] of Object.entries(initialState.targetProfiles)) {
+        if (key.startsWith('INSTAGRAM::') && (profile as any)?.id) {
+          const uname = key.slice(11).toLowerCase();
+          instagramUserIdCache.set(uname, String((profile as any).id));
+        }
+      }
     }
   } catch {
     // Ignore initial state read errors on fresh uninitialized directories
@@ -1640,6 +1649,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           postIntervalSeconds: platformsCfg.tiktok?.postIntervalSeconds,
           storyIntervalSeconds: platformsCfg.tiktok?.storyIntervalSeconds,
         } as any);
+      }
+      if (state.targetProfiles) {
+        for (const [key, profile] of Object.entries(state.targetProfiles)) {
+          if (key.startsWith('INSTAGRAM::') && (profile as any)?.id) {
+            const uname = key.slice(11).toLowerCase();
+            instagramUserIdCache.set(uname, String((profile as any).id));
+          }
+        }
       }
 
       res.json({ ok: true, state });
