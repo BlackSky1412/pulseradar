@@ -16,7 +16,7 @@
     {
       "id": "rule_instagram_source",
       "ownerId": "demo_user",
-      "keyword": "@panbaozhen16, @baotran16tui, @tza_ggg, @zanggggxinhhh, @hknfanacc_, @ngan.duong2405, @vyvy.babieeeew, @wyesool, @tram.anhh.165, @ha_hoang0104, @tieutiennugovap, @hi_christineco, @halyiu99, @huyen.204, @han.hang, @_linhchipham2, @quyenqui, @naiverosie, @phuong.anh.17.09, @_lchi.521, @ngocthanhh1110, @206_nbt, @nghuynn_25, @thanhhienn_100, @ngocelis.ht, @kimberly.pham.xx, @ebethor__, @uynlongcouple, @trangbaby003, @quynhvu.203, @nhinhi.0311, @hoanguyen200700",
+      "keyword": "@panbaozhen16, @baotran16tui, @tza_ggg, @zanggggxinhhh, @hknfanacc_, @ngan.duong2405, @vyvy.babieeeew, @wyesool, @tram.anhh.165, @ha_hoang0104, @tieutiennugovap, @hi_christineco, @halyiu99, @huyen.204, @han.hang, @_linhchipham2, @quyenqui, @naiverosie, @phuong.anh.17.09, @_lchi.521, @ngocthanhh1110, @206_nbt, @nghuynn_25, @thanhhienn_100, @ngocelis.ht, @kimberly.pham.xx, @ebethor__, @uynlongcouple, @trangbaby003, @quynhvu.203, @nhinhi.0311, @hoanguyen200700, @quynhanhtran._, @jasminelyra_07, @shinbabi13, @tue.linhhh",
       "excludedKeywords": "instagram.com |",
       "matchType": "contains",
       "platforms": "hackernews",
