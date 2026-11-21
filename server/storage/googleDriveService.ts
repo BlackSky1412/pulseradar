@@ -103,7 +103,7 @@ export class GoogleDriveService {
     const header = { alg: 'RS256', typ: 'JWT' };
     const claim = {
       iss: sa.client_email,
-      scope: 'https://www.googleapis.com/auth/drive.file',
+      scope: 'https://www.googleapis.com/auth/drive',
       aud: 'https://oauth2.googleapis.com/token',
       exp: now + 3600,
       iat: now,
@@ -176,7 +176,7 @@ export class GoogleDriveService {
       q += ` and '${parentFolderId}' in parents`;
     }
 
-    const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)`;
+    const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name)`;
     const searchResp = await fetch(searchUrl, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -199,7 +199,7 @@ export class GoogleDriveService {
       createBody.parents = [parentFolderId];
     }
 
-    const createResp = await fetch('https://www.googleapis.com/drive/v3/files?fields=id,name', {
+    const createResp = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -286,7 +286,7 @@ export class GoogleDriveService {
       ]);
 
       const uploadUrl =
-        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,webContentLink,size';
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,webViewLink,webContentLink,size';
 
       const uploadResp = await fetch(uploadUrl, {
         method: 'POST',

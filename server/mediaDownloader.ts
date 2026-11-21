@@ -49,17 +49,19 @@ export function resolveDriveStorageRoot(customRoot?: string): string {
     return path.resolve(envPath.trim());
   }
 
-  const defaultDrivePath = 'G:\\My Drive\\PulseRadar_StreamRecorder_Package\\Downloaded_Media';
   try {
-    const driveBase = 'G:\\My Drive\\PulseRadar_StreamRecorder_Package';
-    if (fs.existsSync(driveBase)) {
-      if (!fs.existsSync(defaultDrivePath)) {
-        fs.mkdirSync(defaultDrivePath, { recursive: true });
+    for (const letter of ['H', 'G', 'I', 'F', 'D']) {
+      const driveBase = `${letter}:\\My Drive`;
+      if (fs.existsSync(driveBase)) {
+        const driveMedia = path.join(driveBase, 'PulseRadar_Media');
+        if (!fs.existsSync(driveMedia)) {
+          fs.mkdirSync(driveMedia, { recursive: true });
+        }
+        return driveMedia;
       }
-      return defaultDrivePath;
     }
   } catch {
-    // Ignore error if G: drive is not mounted (e.g. on Linux/Render)
+    // Ignore error if drive is not mounted (e.g. on Linux/Render)
   }
 
   const fallbackPath = path.resolve(process.cwd(), 'data', 'downloaded_media');

@@ -165,7 +165,8 @@ export class TikTokWatcher {
         const initialized = await this.stateStore.isInitialized('TIKTOK', username, eventType);
 
         // First-run warmup: sync current baseline without dispatching alerts
-        if (!initialized && this.config.enableWarmup !== false) {
+        // Stories only last 24h, so active stories should be captured immediately rather than suppressed.
+        if (!initialized && this.config.enableWarmup !== false && eventType !== 'story') {
           const baselineItems = await collector.fetch(username);
           await this.stateStore.warmupUser(
             'TIKTOK',
