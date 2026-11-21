@@ -17,6 +17,7 @@ import {
   classifyInstagramFailure,
   formatInstagramCookie,
   IG_MOBILE_USER_AGENT,
+  IG_WEB_USER_AGENT,
   resolveInstagramUserId,
   unescapeInstagramUrl,
 } from './instagramShared';
@@ -106,6 +107,43 @@ function parseStoryItemsArray(items: unknown): RawInstagramStory[] {
   return stories;
 }
 
+export function extractInstagramStoriesFromWebHtml(html: string): RawInstagramStory[] {
+  const marker = '"xdt_api__v1__feed__reels_media":';
+  const idx = html.indexOf(marker);
+  if (idx === -1) return [];
+
+  const start = idx + marker.length;
+  let depth = 0;
+  let end = start;
+  for (let i = start; i < html.length; i++) {
+    if (html[i] === '{') depth++;
+    else if (html[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  if (end <= start) return [];
+
+  try {
+    const jsonStr = html.slice(start, end);
+    const data = JSON.parse(jsonStr);
+    const reels = data?.reels_media || [];
+    const stories: RawInstagramStory[] = [];
+    for (const reel of reels) {
+      for (const item of reel?.items || []) {
+        const parsed = parseInstagramStoryItem(item);
+        if (parsed) stories.push(parsed);
+      }
+    }
+    return stories;
+  } catch {
+    return [];
+  }
+}
+
 async function defaultFetchInstagramStories(
   username: string,
   rawCookie: string
@@ -113,6 +151,61 @@ async function defaultFetchInstagramStories(
   const formattedCookie = formatInstagramCookie(rawCookie);
   const usedCookie = Boolean(formattedCookie);
 
+  // Tier 1 (Primary for Web Sessions): Direct Web Stories SSR Page
+  if (usedCookie) {
+    const webStoriesUrl = `https://www.instagram.com/stories/${encodeURIComponent(username)}/`;
+    const webResp = await fetchWithTimeout(webStoriesUrl, {
+      headers: {
+        'User-Agent': IG_WEB_USER_AGENT,
+        Cookie: formattedCookie,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        Referer: `https://www.instagram.com/${encodeURIComponent(username)}/`,
+      },
+      timeoutMs: 12000,
+    });
+
+    const webHtml = webResp.text || '';
+    if (webResp.status === 200 && webHtml) {
+      const parsedStories = extractInstagramStoriesFromWebHtml(webHtml);
+      if (parsedStories.length > 0) {
+        return {
+          status: 'OK',
+          stories: parsedStories,
+          httpStatus: 200,
+          usedCookie: true,
+        };
+      }
+      if (
+        webHtml.includes('"xdt_api__v1__feed__reels_media"') ||
+        webHtml.includes('StoriesPage_') ||
+        /"reels_media":\s*\[\]/.test(webHtml)
+      ) {
+        return {
+          status: 'OK',
+          stories: [],
+          httpStatus: 200,
+          usedCookie: true,
+        };
+      }
+    }
+
+    const webFail = classifyInstagramFailure(webResp.status, webResp.url, webHtml, true);
+    if (webFail?.status === 'AUTH_REQUIRED' || webFail?.status === 'PRIVATE') {
+      return {
+        status: webFail.status,
+        stories: [],
+        reason: webFail.reason,
+        httpStatus: webFail.httpStatus,
+        usedCookie: true,
+      };
+    }
+  }
+
+  // Tier 2: Mobile / Private API fallback
   const userRes = await resolveInstagramUserId(username, formattedCookie);
   if (userRes.failureResult) {
     return {
