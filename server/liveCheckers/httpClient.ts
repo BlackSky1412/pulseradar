@@ -33,6 +33,18 @@ export async function fetchWithTimeout(
       url: res.url || url,
       text,
     };
+  } catch (err: unknown) {
+    const msg = (err as Error)?.message || '';
+    const causeMsg = String((err as { cause?: { message?: string } })?.cause?.message || '');
+    if (msg.includes('redirect count exceeded') || causeMsg.includes('redirect count exceeded')) {
+      return {
+        ok: false,
+        status: 302,
+        url,
+        text: 'REDIRECT_LOOP: Cookie session invalid or expired',
+      };
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }

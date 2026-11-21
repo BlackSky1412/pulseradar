@@ -116,9 +116,12 @@ export function classifyInstagramFailure(
 
   if (
     status === 401 ||
+    status === 302 ||
     lowerUrl.includes('/accounts/login') ||
     lowerBody.includes('"require_login":true') ||
-    lowerBody.includes('login_required')
+    lowerBody.includes('login_required') ||
+    lowerBody.includes('redirect_loop') ||
+    lowerBody.includes('sessionid=deleted')
   ) {
     return {
       status: 'AUTH_REQUIRED',
