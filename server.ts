@@ -50,6 +50,7 @@ import {
 } from './server/watchers/tiktokWatcher';
 import { Notifier } from './server/watchers/notifier';
 import { resolveDriveStorageRoot } from './server/mediaDownloader';
+import { createStorageManager } from './server/storage/index';
 import type { PendingDeviceNotification } from './server/watchers/types';
 import {
   createAndroidClient,
@@ -1464,6 +1465,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
       }
 
       res.sendFile(targetPath);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // 0d-3b. Multi-Cloud Storage Status (Google Drive API & Telegram)
+  app.get('/api/storage/status', (_req, res) => {
+    try {
+      const storageManager = createStorageManager();
+      res.json({ ok: true, status: storageManager.getStatus() });
     } catch (err) {
       res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }

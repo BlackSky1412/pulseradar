@@ -318,6 +318,11 @@ export default function App() {
   const lastSyncedWorkspaceJsonRef = useRef<string | null>(null);
   const [androidStatus, setAndroidStatus] = useState<AndroidRuntimeStatus | null>(null);
   const [watcherStatus, setWatcherStatus] = useState<WatcherStatusData | null>(null);
+  const [storageStatus, setStorageStatus] = useState<{
+    googleDrive?: { enabled: boolean; configured: boolean; clientEmail?: string; folderId?: string; lastError?: string | null };
+    telegram?: { enabled: boolean; configured: boolean; chatId?: string; lastError?: string | null };
+    localStorageRoot?: string;
+  } | null>(null);
 
   // Per-target stream subscription metadata (Live, Post, Story, Warmup)
   const [targetStreamMetaMap, setTargetStreamMetaMap] = useState<Record<string, TargetStreamMeta>>(() => {
@@ -694,16 +699,33 @@ export default function App() {
     }
   }, []);
 
+  // Fetch Cloud Storage Status (Google Drive API & Telegram)
+  const fetchStorageStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/storage/status');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.ok && data.status) {
+          setStorageStatus(data.status);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     fetchSandboxLogs();
     fetchAndroidStatus();
     fetchWatcherStatus();
+    fetchStorageStatus();
     const timer = setInterval(() => {
       void fetchAndroidStatus();
       void fetchWatcherStatus();
+      void fetchStorageStatus();
     }, 10000);
     return () => clearInterval(timer);
-  }, [fetchSandboxLogs, fetchAndroidStatus, fetchWatcherStatus]);
+  }, [fetchSandboxLogs, fetchAndroidStatus, fetchWatcherStatus, fetchStorageStatus]);
 
   // Execute a real live scan or activity event
   const runSocialScan = useCallback(
@@ -2596,6 +2618,7 @@ export default function App() {
                       void fetchAndroidStatus();
                       void fetchSandboxLogs();
                       void fetchWatcherStatus();
+                      void fetchStorageStatus();
                     }}
                     className="min-h-[44px] md:min-h-[36px] inline-flex items-center gap-1.5 px-3.5 py-2 md:px-3 md:py-1.5 text-xs font-semibold text-slate-200 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
                   >
@@ -2684,6 +2707,52 @@ export default function App() {
                   </div>
                   <div className="text-[10px] text-slate-400 font-mono">
                     Máy chủ: {servers.length} webhook server
+                  </div>
+                </div>
+              </div>
+
+              {/* Cloud Storage Providers: Google Drive API & Telegram */}
+              <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-200 uppercase tracking-wider font-mono">
+                      Lưu Trữ Đám Mây (Cloud Storage)
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Tự động đẩy bài Post & Story đã tải lên Google Drive của bạn hoặc Kênh Telegram.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* Google Drive Status */}
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono">
+                    <span className="text-slate-400">Google Drive:</span>
+                    {storageStatus?.googleDrive?.configured ? (
+                      <span className="text-emerald-400 font-bold flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        Đã kết nối API ({storageStatus.googleDrive.clientEmail?.split('@')[0]})
+                      </span>
+                    ) : (
+                      <span className="text-amber-400 font-medium">
+                        Lưu máy cục bộ / Chờ Key Drive API
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Telegram Status */}
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono">
+                    <span className="text-slate-400">Telegram:</span>
+                    {storageStatus?.telegram?.configured ? (
+                      <span className="text-emerald-400 font-bold flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        Đã kết nối Bot ({storageStatus.telegram.chatId})
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">
+                        Sẵn sàng cấu hình sau
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

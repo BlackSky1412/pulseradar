@@ -2,6 +2,7 @@
 import path from 'node:path';
 import { fetchWithTimeout, safeJsonParse } from './liveCheckers/httpClient';
 import type { TikTokEvent, WatcherEventType } from './watchers/types';
+import { createStorageManager, StorageManager, type UnifiedUploadResult } from './storage/index';
 
 export interface DownloadedFileItem {
   path: string;
@@ -9,6 +10,8 @@ export interface DownloadedFileItem {
   fileSize: number;
   mimeType: string;
   sourceUrl: string;
+  driveLink?: string;
+  telegramLink?: string;
 }
 
 export interface DownloadedMediaResult {
@@ -21,11 +24,13 @@ export interface DownloadedMediaResult {
   files: DownloadedFileItem[];
   error?: string;
   downloadedAt: string;
+  cloudUploads?: UnifiedUploadResult[];
 }
 
 export interface MediaDownloaderOptions {
   storageRoot?: string;
   timeoutMs?: number;
+  storageManager?: StorageManager;
 }
 
 /**
@@ -266,19 +271,28 @@ export async function resolveHighQualityMedia(
 export class MediaDownloader {
   private storageRoot: string;
   private timeoutMs: number;
+  private storageManager: StorageManager;
 
   constructor(options?: MediaDownloaderOptions) {
     this.storageRoot = resolveDriveStorageRoot(options?.storageRoot);
     this.timeoutMs = options?.timeoutMs ?? 30000;
+    this.storageManager =
+      options?.storageManager ||
+      createStorageManager({ localStorageRoot: this.storageRoot });
   }
 
   getStorageRoot(): string {
     return this.storageRoot;
   }
 
+  getStorageManager(): StorageManager {
+    return this.storageManager;
+  }
+
   /**
    * Automatically downloads all media associated with a post or story event
    * into <Drive_Folder>/<username>/<posts|stories>/<timestamp>_<id>.<ext>
+   * and dispatches to configured cloud storage providers (Google Drive API / Telegram).
    */
   async downloadEventMedia(event: TikTokEvent): Promise<DownloadedMediaResult> {
     const downloadedAt = new Date().toISOString();
@@ -294,6 +308,7 @@ export class MediaDownloader {
       title: event.title || `${event.eventType} by @${event.username}`,
       storageDir: targetDir,
       files: [],
+      cloudUploads: [],
       downloadedAt,
     };
 
@@ -309,29 +324,57 @@ export class MediaDownloader {
         const suffix = candidates.length > 1 ? `_${idx + 1}` : '';
         const fileName = `${datePrefix}_${cleanId}${suffix}.${candidate.ext}`;
         const destPath = path.join(targetDir, fileName);
+        let fileSize = 0;
 
         // If file already exists and is non-empty, avoid redundant download
         if (fs.existsSync(destPath)) {
           const stats = fs.statSync(destPath);
           if (stats.size > 0) {
-            result.files.push({
-              path: destPath,
-              fileName,
-              fileSize: stats.size,
-              mimeType: candidate.mimeType,
-              sourceUrl: candidate.url,
-            });
-            continue;
+            fileSize = stats.size;
           }
         }
 
-        const downloaded = await downloadFileAtomic(candidate.url, destPath, this.timeoutMs);
+        if (fileSize === 0) {
+          const downloaded = await downloadFileAtomic(candidate.url, destPath, this.timeoutMs);
+          fileSize = downloaded.fileSize;
+        }
+
+        // Upload to active cloud storage providers (Google Drive API & Telegram)
+        let driveLink: string | undefined;
+        let telegramLink: string | undefined;
+
+        try {
+          const cloudResult = await this.storageManager.uploadMedia({
+            localFilePath: destPath,
+            fileName,
+            fileSize,
+            mimeType: candidate.mimeType,
+            username: event.username,
+            eventType: event.eventType,
+            title: event.title,
+            sourceUrl: candidate.url,
+          });
+
+          driveLink = cloudResult.driveLink;
+          telegramLink = cloudResult.telegramLink;
+          if (Array.isArray(result.cloudUploads)) {
+            result.cloudUploads.push(cloudResult);
+          }
+        } catch (uploadErr) {
+          console.warn(
+            `[MediaDownloader] Cloud upload warning for ${fileName}:`,
+            uploadErr instanceof Error ? uploadErr.message : String(uploadErr)
+          );
+        }
+
         result.files.push({
           path: destPath,
           fileName,
-          fileSize: downloaded.fileSize,
-          mimeType: downloaded.mimeType,
+          fileSize,
+          mimeType: candidate.mimeType,
           sourceUrl: candidate.url,
+          driveLink,
+          telegramLink,
         });
       }
 
