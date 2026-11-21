@@ -16,7 +16,7 @@
     The Render Service ID (default: srv-dbtteu8u01pc73d2ed60).
 
 .PARAMETER TargetUrl
-    The public service URL (default: https://simple-web-starter-3755.onrender.com).
+    The public service URL (default: https://pulseradar-server.onrender.com).
 
 .PARAMETER TimeoutSeconds
     Maximum seconds to wait for live health verification (default: 180).

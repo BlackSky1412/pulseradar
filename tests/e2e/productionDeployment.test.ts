@@ -16,7 +16,7 @@ import { ReferenceContractServer } from './referenceServer.ts';
 import type { WorkspaceState } from './types.ts';
 
 // Production Infrastructure Constants
-const RENDER_PUBLIC_URL = process.env.E2E_RENDER_URL ?? 'https://simple-web-starter-3755.onrender.com';
+const RENDER_PUBLIC_URL = process.env.E2E_RENDER_URL ?? 'https://pulseradar-server.onrender.com';
 const NEON_POOLER_HOST = 'ep-winter-river-a1hipqli-pooler.ap-southeast-1.aws.neon.tech';
 const NEON_DIRECT_HOST = 'ep-winter-river-a1hipqli.ap-southeast-1.aws.neon.tech';
 const NEON_PORT = 5432;

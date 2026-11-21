@@ -16,6 +16,7 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import {
+  Activity,
   Search,
   Plus,
   Play,
@@ -101,6 +102,7 @@ export type ActiveTab =
   | 'rules'
   | 'servers'
   | 'sandbox'
+  | 'activity'
   | SocialPlatformKey;
 
 interface SandboxReceiptItem {
@@ -205,9 +207,11 @@ export function parseNavigationHash(
     clean === 'overview' ||
     clean === 'rules' ||
     clean === 'servers' ||
-    clean === 'sandbox'
+    clean === 'sandbox' ||
+    clean === 'activity' ||
+    clean === 'history'
   ) {
-    return { tab: clean as ActiveTab };
+    return { tab: (clean === 'history' ? 'activity' : clean) as ActiveTab };
   }
   return null;
 }
@@ -417,6 +421,9 @@ export default function App() {
         : undefined);
     if (p) {
       setSelectedPlatform(p);
+    }
+    if (tab === 'activity') {
+      setLogScope('all');
     }
     const targetHash = `#${tab}`;
     if (window.location.hash !== targetHash) {
@@ -1539,6 +1546,22 @@ export default function App() {
           <div className="w-px h-4 bg-slate-800" />
 
           <a
+            href="#activity"
+            onClick={e => {
+              e.preventDefault();
+              navigateToTab('activity');
+            }}
+            className={`py-1 md:min-h-[36px] inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+              activeTab === 'activity'
+                ? 'text-emerald-400 font-semibold underline underline-offset-8 decoration-2'
+                : 'hover:text-slate-100'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Lịch Sử Hoạt Động</span>
+          </a>
+
+          <a
             href="#servers"
             onClick={e => {
               e.preventDefault();
@@ -2550,6 +2573,135 @@ export default function App() {
             )}
           </section>
         )}
+
+        {/* VIEW 4: ACTIVITY LOG & SYSTEM HISTORY */}
+        {activeTab === 'activity' && (
+          <div className="space-y-6 sm:space-y-8">
+            {/* System Status Dashboard Card */}
+            <section className="bg-[#0C111D] border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div>
+                  <h1 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                    <Activity className="w-5 h-5 text-emerald-400" />
+                    Lịch Sử & Trạng Thái Hoạt Động Hệ Thống
+                  </h1>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Theo dõi thời gian thực quá trình quét kênh, nhịp tim điện thoại Android và nhật ký request.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void fetchAndroidStatus();
+                      void fetchSandboxLogs();
+                      void fetchWatcherStatus();
+                    }}
+                    className="min-h-[44px] md:min-h-[36px] inline-flex items-center gap-1.5 px-3.5 py-2 md:px-3 md:py-1.5 text-xs font-semibold text-slate-200 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Làm mới trạng thái
+                  </button>
+                </div>
+              </div>
+
+              {/* Status Metric Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {/* Companion Device Card */}
+                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-mono text-slate-400 uppercase">Thiết Bị Ghi Hình</span>
+                    <span
+                      className={`inline-block w-2 h-2 rounded-full ${
+                        androidStatus?.device ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'
+                      }`}
+                    />
+                  </div>
+                  <div className="text-sm font-bold text-slate-200 truncate">
+                    {androidStatus?.device ? androidStatus.device.deviceId : 'Chưa kết nối'}
+                  </div>
+                  <div className="text-[11px] text-slate-400 truncate">
+                    IP: {androidStatus?.device?.ip || 'N/A'} ({androidStatus?.device?.networkType || 'LAN'})
+                  </div>
+                  <div className="text-[10px] text-emerald-400 font-mono">
+                    {androidStatus?.device?.lastSeenAt
+                      ? `Ping: ${new Date(androidStatus.device.lastSeenAt).toLocaleTimeString()}`
+                      : 'Chưa có nhịp tim'}
+                  </div>
+                </div>
+
+                {/* Auto Scan Engine */}
+                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-mono text-slate-400 uppercase">Bộ Quét Tự Động</span>
+                    <span
+                      className={`inline-block w-2 h-2 rounded-full ${
+                        androidStatus?.scanner?.running ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                      }`}
+                    />
+                  </div>
+                  <div className="text-sm font-bold text-slate-200">
+                    {androidStatus?.scanner?.running ? 'Đang chạy liên tục' : 'Tạm dừng'}
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Chu kỳ: {androidStatus?.scanner?.pollIntervalSeconds ?? 30}s / lần
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-mono">
+                    {androidStatus?.scanner?.lastScanAt
+                      ? `Lần quét cuối: ${new Date(androidStatus.scanner.lastScanAt).toLocaleTimeString()}`
+                      : 'Đang khởi động'}
+                  </div>
+                </div>
+
+                {/* Live Channels */}
+                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-mono text-slate-400 uppercase">Kênh Đang Live</span>
+                    <Flame className="w-3.5 h-3.5 text-rose-500" />
+                  </div>
+                  <div className="text-sm font-bold text-rose-300">
+                    {activePlatformLiveCount} kênh đang phát
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Tổng mục tiêu: {rules.reduce((acc, r) => acc + (r.keyword.match(/@?[a-zA-Z0-9._-]+/g) || []).length, 0)} kênh
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-mono">
+                    Tự động đồng bộ Companion
+                  </div>
+                </div>
+
+                {/* Webhook & Sandbox */}
+                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-mono text-slate-400 uppercase">Sự Kiện Đã Bắn</span>
+                    <Code2 className="w-3.5 h-3.5 text-indigo-400" />
+                  </div>
+                  <div className="text-sm font-bold text-indigo-300">
+                    {alerts.length} sự kiện ghi nhận
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Sandbox: {sandboxReceipts.length} request đã nhận
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-mono">
+                    Máy chủ: {servers.length} webhook server
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* Section: Activity Log Table & Mobile Cards */}
+            <ActivityLogSection
+              selectedPlatform={selectedPlatform}
+              logScope={logScope}
+              onChangeLogScope={setLogScope}
+              searchQuery={searchQuery}
+              onChangeSearchQuery={setSearchQuery}
+              totalAlertsCount={alerts.length}
+              filteredAlerts={filteredAlerts}
+              onInspectAlert={setInspectingAlert}
+            />
+          </div>
+        )}
       </main>
 
       {/* Clean Footer */}
@@ -2616,7 +2768,7 @@ export default function App() {
       {/* Mobile Bottom Tab Bar */}
       <nav
         aria-label="Điều hướng di động"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0B0F1A]/95 backdrop-blur-md border-t border-slate-800 grid grid-cols-6 h-16"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0B0F1A]/95 backdrop-blur-md border-t border-slate-800 grid grid-cols-7 h-16"
       >
         <button
           type="button"
@@ -2669,6 +2821,18 @@ export default function App() {
           }`}
         >
           <span className="font-bold">X</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => navigateToTab('activity')}
+          className={`min-h-[44px] min-w-[44px] flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors ${
+            activeTab === 'activity'
+              ? 'text-emerald-400 font-bold'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <Activity className="w-3.5 h-3.5 text-emerald-400" />
+          <span>Lịch sử</span>
         </button>
         <button
           type="button"
