@@ -103,6 +103,8 @@ import { UserAvatar } from './components/UserAvatar';
 import { InfoPopover } from './components/InfoPopover';
 import { WatchlistSection } from './components/WatchlistSection';
 import { ActivityLogSection } from './components/ActivityLogSection';
+import { DownloadedMediaSection, type DownloadedMediaItem } from './components/DownloadedMediaSection';
+import { ScannerDiagnosticsSection, type WatcherDiagnosticItem } from './components/ScannerDiagnosticsSection';
 
 export type ActiveTab =
   | 'overview'
@@ -160,6 +162,7 @@ interface WatcherStatusData {
     seenEventsCount: number;
     trackedUsersCount: number;
   };
+  diagnostics?: WatcherDiagnosticItem[];
 }
 
 function toIsoString(val: unknown): string {
@@ -326,6 +329,8 @@ export default function App() {
   const lastSyncedPartialWorkspaceJsonRef = useRef<string | null>(null);
   const [androidStatus, setAndroidStatus] = useState<AndroidRuntimeStatus | null>(null);
   const [watcherStatus, setWatcherStatus] = useState<WatcherStatusData | null>(null);
+  const [downloadedMedia, setDownloadedMedia] = useState<DownloadedMediaItem[]>([]);
+  const [isLoadingMedia, setIsLoadingMedia] = useState(false);
   const [storageStatus, setStorageStatus] = useState<{
     googleDrive?: { enabled: boolean; configured: boolean; clientEmail?: string; folderId?: string; lastError?: string | null };
     telegram?: { enabled: boolean; configured: boolean; chatId?: string; lastError?: string | null };
@@ -806,18 +811,38 @@ export default function App() {
     }
   }, []);
 
+  // Fetch Downloaded Media (stories & posts saved on disk)
+  const fetchDownloadedMedia = useCallback(async () => {
+    try {
+      setIsLoadingMedia(true);
+      const res = await fetch('/api/media/downloaded');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.media)) {
+          setDownloadedMedia(data.media as DownloadedMediaItem[]);
+        }
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingMedia(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchSandboxLogs();
     fetchAndroidStatus();
     fetchWatcherStatus();
     fetchStorageStatus();
+    fetchDownloadedMedia();
     const timer = setInterval(() => {
       void fetchAndroidStatus();
       void fetchWatcherStatus();
       void fetchStorageStatus();
+      void fetchDownloadedMedia();
     }, 10000);
     return () => clearInterval(timer);
-  }, [fetchSandboxLogs, fetchAndroidStatus, fetchWatcherStatus, fetchStorageStatus]);
+  }, [fetchSandboxLogs, fetchAndroidStatus, fetchWatcherStatus, fetchStorageStatus, fetchDownloadedMedia]);
 
   // Execute a real live scan or activity event
   const runSocialScan = useCallback(
@@ -2940,6 +2965,7 @@ export default function App() {
                       void fetchSandboxLogs();
                       void fetchWatcherStatus();
                       void fetchStorageStatus();
+                      void fetchDownloadedMedia();
                     }}
                     className="min-h-[44px] md:min-h-[36px] inline-flex items-center gap-1.5 px-3.5 py-2 md:px-3 md:py-1.5 text-xs font-semibold text-slate-200 bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
                   >
@@ -3079,7 +3105,20 @@ export default function App() {
               </div>
             </section>
 
-            {/* Section: Activity Log Table & Mobile Cards */}
+            {/* 1. Downloaded Media Library (Stories & Posts) */}
+            <DownloadedMediaSection
+              media={downloadedMedia}
+              isLoading={isLoadingMedia}
+              onRefresh={() => void fetchDownloadedMedia()}
+            />
+
+            {/* 2. Real-time Live Scanner Execution Logs */}
+            <ScannerDiagnosticsSection
+              diagnostics={watcherStatus?.diagnostics}
+              lastScanAt={androidStatus?.scanner?.lastScanAt}
+            />
+
+            {/* 3. Section: Activity Log Table & Mobile Cards */}
             <ActivityLogSection
               selectedPlatform={selectedPlatform}
               logScope={logScope}
