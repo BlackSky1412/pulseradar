@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { LivePlatform } from '../liveCheckers/types';
 import type {
   GoogleDriveConfig,
   GoogleServiceAccount,
@@ -33,7 +34,6 @@ export class GoogleDriveService {
     if (rawKey && rawKey.trim()) {
       try {
         let jsonStr = rawKey.trim();
-        // Check if base64 encoded
         if (!jsonStr.startsWith('{') && jsonStr.length > 50) {
           try {
             jsonStr = Buffer.from(jsonStr, 'base64').toString('utf-8');
@@ -75,15 +75,19 @@ export class GoogleDriveService {
 
   isConfigured(): boolean {
     return Boolean(
-      this.config.serviceAccount?.client_email &&
-      this.config.serviceAccount?.private_key
+      this.config.enabled !== false &&
+        this.config.serviceAccount?.client_email &&
+        this.config.serviceAccount?.private_key
     );
   }
 
   getStatus() {
     return {
-      enabled: this.config.enabled && this.isConfigured(),
-      configured: this.isConfigured(),
+      enabled: this.isConfigured(),
+      configured: Boolean(
+        this.config.serviceAccount?.client_email &&
+          this.config.serviceAccount?.private_key
+      ),
       clientEmail: this.config.serviceAccount?.client_email,
       folderId: this.config.folderId,
       lastError: this.lastError,
@@ -130,7 +134,8 @@ export class GoogleDriveService {
     }
 
     const jwt = this.createSignedJwt();
-    const tokenUrl = this.config.serviceAccount?.token_uri || 'https://oauth2.googleapis.com/token';
+    const tokenUrl =
+      this.config.serviceAccount?.token_uri || 'https://oauth2.googleapis.com/token';
 
     const resp = await fetch(tokenUrl, {
       method: 'POST',
@@ -143,7 +148,12 @@ export class GoogleDriveService {
       }),
     });
 
-    const data = await resp.json() as { access_token?: string; expires_in?: number; error?: string; error_description?: string };
+    const data = (await resp.json()) as {
+      access_token?: string;
+      expires_in?: number;
+      error?: string;
+      error_description?: string;
+    };
     if (!resp.ok || !data.access_token) {
       const msg = data.error_description || data.error || resp.statusText;
       this.lastError = `OAuth Token exchange failed: ${msg}`;
@@ -170,7 +180,6 @@ export class GoogleDriveService {
 
     const token = await this.getAccessToken();
 
-    // Query existing folder
     let q = `name = '${folderName.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
     if (parentFolderId) {
       q += ` and '${parentFolderId}' in parents`;
@@ -182,7 +191,9 @@ export class GoogleDriveService {
     });
 
     if (searchResp.ok) {
-      const searchData = await searchResp.json() as { files?: Array<{ id: string; name: string }> };
+      const searchData = (await searchResp.json()) as {
+        files?: Array<{ id: string; name: string }>;
+      };
       if (Array.isArray(searchData.files) && searchData.files.length > 0) {
         const foundId = searchData.files[0].id;
         this.folderCache.set(cacheKey, foundId);
@@ -190,7 +201,6 @@ export class GoogleDriveService {
       }
     }
 
-    // Create new folder
     const createBody: { name: string; mimeType: string; parents?: string[] } = {
       name: folderName,
       mimeType: 'application/vnd.google-apps.folder',
@@ -199,39 +209,52 @@ export class GoogleDriveService {
       createBody.parents = [parentFolderId];
     }
 
-    const createResp = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(createBody),
-    });
+    const createResp = await fetch(
+      'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(createBody),
+      }
+    );
 
     if (!createResp.ok) {
       const errText = await createResp.text();
       throw new Error(`Failed to create Google Drive folder '${folderName}': ${errText}`);
     }
 
-    const createData = await createResp.json() as { id: string };
+    const createData = (await createResp.json()) as { id: string };
     this.folderCache.set(cacheKey, createData.id);
     return createData.id;
   }
 
   /**
-   * Resolves the target folder hierarchy: <Root_Folder>/<username>/<posts|stories>/
+   * Resolves the target folder hierarchy:
+   * - TikTok / omitted: <Root_Folder>/<username>/<posts|stories|recordings>/
+   * - Non-TikTok: <Root_Folder>/<platform>/<username>/<posts|stories|recordings>/
    */
-  async resolveTargetFolderId(username: string, eventType: 'post' | 'story' | 'live'): Promise<string | undefined> {
+  async resolveTargetFolderId(
+    username: string,
+    eventType: 'post' | 'story' | 'live',
+    platform?: LivePlatform
+  ): Promise<string | undefined> {
     let currentParent = this.config.folderId;
     if (!currentParent) {
-      // Use or create a default root folder "PulseRadar_Downloaded_Media"
       currentParent = await this.ensureFolder('PulseRadar_Downloaded_Media');
+    }
+
+    if (platform && platform !== 'TIKTOK') {
+      currentParent = await this.ensureFolder(platform.toLowerCase(), currentParent);
     }
 
     const cleanUsername = username.replace(/[^a-zA-Z0-9_.-]/g, '_').toLowerCase();
     const userFolderId = await this.ensureFolder(cleanUsername, currentParent);
 
-    const subFolderName = eventType === 'story' ? 'stories' : eventType === 'live' ? 'recordings' : 'posts';
+    const subFolderName =
+      eventType === 'story' ? 'stories' : eventType === 'live' ? 'recordings' : 'posts';
     return await this.ensureFolder(subFolderName, userFolderId);
   }
 
@@ -243,7 +266,7 @@ export class GoogleDriveService {
       return {
         provider: 'google_drive',
         success: false,
-        error: 'Google Drive Service Account not configured',
+        error: 'Google Drive Service Account not configured or disabled',
       };
     }
 
@@ -257,12 +280,17 @@ export class GoogleDriveService {
       }
 
       const fileBuffer = fs.readFileSync(params.localFilePath);
-      const targetFolderId = await this.resolveTargetFolderId(params.username, params.eventType);
+      const targetFolderId = await this.resolveTargetFolderId(
+        params.username,
+        params.eventType,
+        params.platform
+      );
       const token = await this.getAccessToken();
 
+      const platformLabel = params.platform || 'TIKTOK';
       const metadata: { name: string; parents?: string[]; description?: string } = {
         name: params.fileName,
-        description: `${params.title || params.fileName} | @${params.username} | Source: ${params.sourceUrl || 'PulseRadar'}`,
+        description: `[${platformLabel}] ${params.title || params.fileName} | @${params.username} | Source: ${params.sourceUrl || 'PulseRadar'}`,
       };
       if (targetFolderId) {
         metadata.parents = [targetFolderId];
@@ -308,7 +336,7 @@ export class GoogleDriveService {
         };
       }
 
-      const data = await uploadResp.json() as {
+      const data = (await uploadResp.json()) as {
         id: string;
         name: string;
         webViewLink?: string;

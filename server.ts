@@ -29,12 +29,14 @@ import {
 import {
   checkBatchLive,
   checkUserLive,
+  detectLivePlatform,
   type BatchLiveTarget,
   type PlatformCookies,
 } from './server/liveCheckers/index';
 import {
   createStateStore,
   createDefaultWorkspaceState,
+  normalizeTargetProfiles,
   type AndroidState,
   type StateStore,
   type WorkspaceState,
@@ -48,6 +50,10 @@ import {
   TikTokWatcher,
   type TikTokWatcherOptions,
 } from './server/watchers/tiktokWatcher';
+import {
+  MultiPlatformWatcher,
+  type MultiPlatformWatcherOptions,
+} from './server/watchers/multiPlatformWatcher';
 import { Notifier } from './server/watchers/notifier';
 import { resolveDriveStorageRoot } from './server/mediaDownloader';
 import { createStorageManager } from './server/storage/index';
@@ -102,7 +108,7 @@ export interface CreateAppOptions {
   androidClientOptions?: AndroidClientOptions;
   envCookies?: PlatformCookies;
   watcherStateStore?: WatcherStateStore;
-  watcher?: TikTokWatcher;
+  watcher?: TikTokWatcher | MultiPlatformWatcher;
   startWatcher?: boolean;
   commandTtlMs?: number;
 }
@@ -112,7 +118,7 @@ export interface CreatedApp {
   stateStore: StateStore;
   androidClient: AndroidClient;
   autoScanner: AutoScanner;
-  watcher: TikTokWatcher;
+  watcher: TikTokWatcher | MultiPlatformWatcher;
   watcherStateStore: WatcherStateStore;
   setListeningPort: (port: number) => void;
   getListeningPort: () => number;
@@ -585,6 +591,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         const platforms = normalizeMultiPlatformSettings(
           (incomingPlatforms !== undefined ? incomingPlatforms : existingPlatforms) as Partial<MultiPlatformSettings> | undefined
         );
+        const existingTargetProfiles = normalizeTargetProfiles(existing.targetProfiles);
 
         const next: WorkspaceState & { scannerSettings: ScannerSettingsState & { platforms: MultiPlatformSettings } } = {
           rules: Array.isArray(partialOrFull?.rules) ? partialOrFull.rules : existingRules,
@@ -619,6 +626,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
                 : existingSettings.deduplicateLive ?? true,
             platforms,
           },
+          targetProfiles: normalizeTargetProfiles(
+            partialOrFull?.targetProfiles,
+            existingTargetProfiles
+          ),
           updatedAt: new Date().toISOString(),
         };
 
@@ -649,14 +660,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
 
   const watcher =
     options.watcher ??
-    new TikTokWatcher({
+    new MultiPlatformWatcher({
       config: {
-        targetUsers: [],
-        liveIntervalSeconds: 60,
-        postIntervalSeconds: 240,
-        storyIntervalSeconds: 360,
+        targetsByPlatform: { TIKTOK: [], INSTAGRAM: [], FACEBOOK: [], X: [] },
+        cookies: {
+          tiktok: normalizeCookieValue(options.envCookies?.tiktok),
+          instagram: normalizeCookieValue(options.envCookies?.instagram),
+          facebook: normalizeCookieValue(options.envCookies?.facebook),
+          x: normalizeCookieValue(options.envCookies?.x),
+        },
         enableWarmup: true,
-        tiktokSessionId: normalizeCookieValue(options.envCookies?.tiktok),
         autoDownloadMedia: true,
         driveStorageRoot,
       },
@@ -681,23 +694,52 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
     const initialState = await stateStore.readWorkspaceStateIfExists();
     if (initialState?.rules) {
       const authoritative = extractAuthoritativeUsers(initialState.rules, {});
-      const tikTokUsers = Object.values(authoritative)
-        .filter(u => u.platform === 'TIKTOK' && u.isEnabled)
-        .map(u => u.username);
-      watcher.setTargetUsers(tikTokUsers);
+      const targetsByPlatform: Record<LivePlatform, string[]> = {
+        TIKTOK: [],
+        INSTAGRAM: [],
+        FACEBOOK: [],
+        X: [],
+      };
+      for (const u of authoritative) {
+        if (u.isEnabled && targetsByPlatform[u.platform as LivePlatform]) {
+          targetsByPlatform[u.platform as LivePlatform].push(u.username);
+        }
+      }
+      if (typeof (watcher as any).setTargetsByPlatform === 'function') {
+        (watcher as any).setTargetsByPlatform(targetsByPlatform);
+      }
+      const tikTokUsers = targetsByPlatform.TIKTOK;
+      watcher.setTargetUsers?.(tikTokUsers);
     }
-    if (typeof initialState?.scannerSettings?.cookies?.tiktok === 'string') {
+    if (initialState?.scannerSettings?.cookies) {
+      const wsCookies = initialState.scannerSettings.cookies;
+      const envCookies = options.envCookies || {};
+      const mergedCookies = {
+        tiktok: (wsCookies.tiktok ?? envCookies.tiktok ?? '').trim(),
+        instagram: (wsCookies.instagram ?? envCookies.instagram ?? '').trim(),
+        facebook: (wsCookies.facebook ?? envCookies.facebook ?? '').trim(),
+        x: (wsCookies.x ?? envCookies.x ?? '').trim(),
+      };
+      if (typeof (watcher as any).updateCookies === 'function') {
+        (watcher as any).updateCookies(mergedCookies);
+      }
+      watcher.updateConfig({
+        tiktokSessionId: mergedCookies.tiktok,
+        cookies: mergedCookies,
+      } as any);
+    } else if (typeof initialState?.scannerSettings?.cookies?.tiktok === 'string') {
       const wsCookie = initialState.scannerSettings.cookies.tiktok.trim();
       const envCookie = normalizeCookieValue(options.envCookies?.tiktok);
       watcher.updateConfig({ tiktokSessionId: wsCookie || envCookie });
     }
-    const ttPlatforms = (initialState?.scannerSettings as any)?.platforms?.tiktok;
-    if (ttPlatforms) {
+    const platformsCfg = (initialState?.scannerSettings as any)?.platforms;
+    if (platformsCfg) {
       watcher.updateConfig({
-        liveIntervalSeconds: ttPlatforms.liveIntervalSeconds,
-        postIntervalSeconds: ttPlatforms.postIntervalSeconds,
-        storyIntervalSeconds: ttPlatforms.storyIntervalSeconds,
-      });
+        platformSettings: platformsCfg,
+        liveIntervalSeconds: platformsCfg.tiktok?.liveIntervalSeconds,
+        postIntervalSeconds: platformsCfg.tiktok?.postIntervalSeconds,
+        storyIntervalSeconds: platformsCfg.tiktok?.storyIntervalSeconds,
+      } as any);
     }
   } catch {
     // Ignore initial state read errors on fresh uninitialized directories
@@ -1542,29 +1584,62 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         res.status(400).json({ ok: false, error: 'Invalid workspace state alerts array' });
         return;
       }
+      if (body.targetProfiles !== undefined && !isPlainObject(body.targetProfiles)) {
+        res.status(400).json({ ok: false, error: 'Invalid workspace state targetProfiles map' });
+        return;
+      }
 
       const state = await stateStore.writeWorkspaceState(body);
 
       // Update watcher targets and configuration from saved workspace state
       if (Array.isArray(state.rules)) {
         const authoritative = extractAuthoritativeUsers(state.rules, {});
-        const tikTokUsers = Object.values(authoritative)
-          .filter(u => u.platform === 'TIKTOK' && u.isEnabled)
-          .map(u => u.username);
-        watcher.setTargetUsers(tikTokUsers);
+        const targetsByPlatform: Record<LivePlatform, string[]> = {
+          TIKTOK: [],
+          INSTAGRAM: [],
+          FACEBOOK: [],
+          X: [],
+        };
+        for (const u of authoritative) {
+          if (u.isEnabled && targetsByPlatform[u.platform as LivePlatform]) {
+            targetsByPlatform[u.platform as LivePlatform].push(u.username);
+          }
+        }
+        if (typeof (watcher as any).setTargetsByPlatform === 'function') {
+          (watcher as any).setTargetsByPlatform(targetsByPlatform);
+        }
+        const tikTokUsers = targetsByPlatform.TIKTOK;
+        watcher.setTargetUsers?.(tikTokUsers);
       }
-      if (typeof state.scannerSettings?.cookies?.tiktok === 'string') {
+      if (state.scannerSettings?.cookies) {
+        const wsCookies = state.scannerSettings.cookies;
+        const envCookies = options.envCookies || {};
+        const mergedCookies = {
+          tiktok: (wsCookies.tiktok ?? envCookies.tiktok ?? '').trim(),
+          instagram: (wsCookies.instagram ?? envCookies.instagram ?? '').trim(),
+          facebook: (wsCookies.facebook ?? envCookies.facebook ?? '').trim(),
+          x: (wsCookies.x ?? envCookies.x ?? '').trim(),
+        };
+        if (typeof (watcher as any).updateCookies === 'function') {
+          (watcher as any).updateCookies(mergedCookies);
+        }
+        watcher.updateConfig({
+          tiktokSessionId: mergedCookies.tiktok,
+          cookies: mergedCookies,
+        } as any);
+      } else if (typeof state.scannerSettings?.cookies?.tiktok === 'string') {
         const wsCookie = state.scannerSettings.cookies.tiktok.trim();
         const envCookie = normalizeCookieValue(options.envCookies?.tiktok);
         watcher.updateConfig({ tiktokSessionId: wsCookie || envCookie });
       }
-      const ttPlatforms = (state.scannerSettings as any)?.platforms?.tiktok;
-      if (ttPlatforms) {
+      const platformsCfg = (state.scannerSettings as any)?.platforms;
+      if (platformsCfg) {
         watcher.updateConfig({
-          liveIntervalSeconds: ttPlatforms.liveIntervalSeconds,
-          postIntervalSeconds: ttPlatforms.postIntervalSeconds,
-          storyIntervalSeconds: ttPlatforms.storyIntervalSeconds,
-        });
+          platformSettings: platformsCfg,
+          liveIntervalSeconds: platformsCfg.tiktok?.liveIntervalSeconds,
+          postIntervalSeconds: platformsCfg.tiktok?.postIntervalSeconds,
+          storyIntervalSeconds: platformsCfg.tiktok?.storyIntervalSeconds,
+        } as any);
       }
 
       res.json({ ok: true, state });
@@ -1584,6 +1659,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
       const seenEventsCount = Object.keys(watcherState.seenEvents || {}).length;
       const trackedUsersCount = Object.keys(watcherState.trackedUsers || {}).length;
 
+      const diagnostics = typeof (watcher as any).getDiagnostics === 'function'
+        ? (watcher as any).getDiagnostics()
+        : [];
+      const platforms = typeof (watcher as any).getPlatformsSummary === 'function'
+        ? (watcher as any).getPlatformsSummary()
+        : {};
+
       res.json({
         success: true,
         running: watcher.isRunning(),
@@ -1592,6 +1674,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           seenEventsCount,
           trackedUsersCount,
         },
+        diagnostics,
+        platforms,
       });
     } catch (error) {
       res.status(500).json({
@@ -1665,20 +1749,57 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
   // 2b. Dedicated User Existence & Syntax Validation Endpoint
   app.post('/api/user/validate', async (req, res) => {
     try {
-      const { target, platform = 'TIKTOK', cookie = '' } = req.body || {};
+      const body = isPlainObject(req.body) ? req.body : {};
+      const target = body.target;
       if (typeof target !== 'string' || !target.trim()) {
         res.status(400).json({ ok: false, error: 'Target username is required' });
         return;
       }
 
-      const result = await validateTargetUser(
-        target.trim(),
-        String(platform),
-        typeof cookie === 'string' ? cookie : ''
-      );
+      const trimmedTarget = target.trim();
+      const rawPlatform =
+        typeof body.platform === 'string' && body.platform.trim()
+          ? body.platform.trim()
+          : 'TIKTOK';
+      const isAnonymous = body.anonymous === true;
+      const resolvedPlatform = detectLivePlatform(trimmedTarget, rawPlatform);
+
+      const PLATFORM_TO_COOKIE_KEY: Record<LivePlatform, keyof PlatformCookies> = {
+        TIKTOK: 'tiktok',
+        INSTAGRAM: 'instagram',
+        FACEBOOK: 'facebook',
+        X: 'x',
+      };
+      const PLATFORM_TO_ENV_VAR: Record<LivePlatform, string> = {
+        TIKTOK: 'TIKTOK_COOKIE',
+        INSTAGRAM: 'INSTAGRAM_COOKIE',
+        FACEBOOK: 'FACEBOOK_COOKIE',
+        X: 'X_COOKIE',
+      };
+
+      const cookieKey = PLATFORM_TO_COOKIE_KEY[resolvedPlatform];
+      let resolvedCookie = '';
+      if (!isAnonymous) {
+        const explicitCookie = normalizeCookieValue(body.cookie);
+        let wsCookie = '';
+        if (!explicitCookie) {
+          const ws = await stateStore.readWorkspaceStateIfExists();
+          wsCookie = normalizeCookieValue(ws?.scannerSettings?.cookies?.[cookieKey]);
+        }
+        const envOptionCookie = normalizeCookieValue(options.envCookies?.[cookieKey]);
+        const processEnvCookie = normalizeCookieValue(
+          process.env[PLATFORM_TO_ENV_VAR[resolvedPlatform]]
+        );
+        resolvedCookie = explicitCookie || wsCookie || envOptionCookie || processEnvCookie;
+      }
+
+      const result = await validateTargetUser(trimmedTarget, resolvedPlatform, resolvedCookie);
       res.json({
         ok: true,
-        result,
+        result: {
+          ...result,
+          authMode: result.authMode ?? (resolvedCookie ? 'cookie' : 'anonymous'),
+        },
       });
     } catch (err) {
       res.status(500).json({

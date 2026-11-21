@@ -21,6 +21,7 @@ Thumbs.db
 # Runtime state: Ignore ephemeral device state & temporary files, KEEP pre-configured rules
 data/*.tmp
 data/android-state.json
+data/downloaded_media/
 !data/workspace-state.json
 
 .agents/

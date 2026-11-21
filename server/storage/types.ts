@@ -1,3 +1,5 @@
+import type { LivePlatform } from '../liveCheckers/types';
+
 export interface GoogleServiceAccount {
   type?: string;
   project_id?: string;
@@ -26,6 +28,7 @@ export interface StorageUploadParams {
   fileName: string;
   fileSize: number;
   mimeType: string;
+  platform?: LivePlatform;
   username: string;
   eventType: 'post' | 'story' | 'live';
   title?: string;

@@ -1,7 +1,8 @@
 ﻿import fs from 'node:fs';
 import path from 'node:path';
 import { fetchWithTimeout, safeJsonParse } from './liveCheckers/httpClient';
-import type { TikTokEvent, WatcherEventType } from './watchers/types';
+import type { LivePlatform } from './liveCheckers/types';
+import type { WatcherEvent, WatcherEventType } from './watchers/types';
 import { createStorageManager, StorageManager, type UnifiedUploadResult } from './storage/index';
 
 export interface DownloadedFileItem {
@@ -16,6 +17,7 @@ export interface DownloadedFileItem {
 
 export interface DownloadedMediaResult {
   success: boolean;
+  platform?: LivePlatform;
   itemId: string;
   username: string;
   eventType: WatcherEventType;
@@ -33,10 +35,68 @@ export interface MediaDownloaderOptions {
   storageManager?: StorageManager;
 }
 
+export interface DownloadFileOptions {
+  timeoutMs?: number;
+  headers?: Record<string, string>;
+  referer?: string;
+  cookie?: string;
+}
+
+const DEFAULT_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+export function getDefaultRefererForPlatform(platform?: LivePlatform | string): string {
+  switch (String(platform || 'TIKTOK').toUpperCase()) {
+    case 'INSTAGRAM':
+      return 'https://www.instagram.com/';
+    case 'FACEBOOK':
+      return 'https://www.facebook.com/';
+    case 'X':
+      return 'https://x.com/';
+    case 'TIKTOK':
+    default:
+      return 'https://www.tiktok.com/';
+  }
+}
+
+export function mergeDownloadHeaders(opts?: DownloadFileOptions): Record<string, string> {
+  const map = new Map<string, { key: string; value: string }>();
+
+  const setHeader = (key: string, value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    map.set(key.toLowerCase(), { key, value: trimmed });
+  };
+
+  setHeader('User-Agent', DEFAULT_USER_AGENT);
+  const referer = opts?.referer !== undefined ? opts.referer : 'https://www.tiktok.com/';
+  if (referer.trim()) {
+    setHeader('Referer', referer);
+  }
+
+  if (opts?.headers && typeof opts.headers === 'object') {
+    for (const [k, v] of Object.entries(opts.headers)) {
+      if (typeof v === 'string' && v.trim()) {
+        setHeader(k, v);
+      }
+    }
+  }
+
+  if (typeof opts?.cookie === 'string' && opts.cookie.trim()) {
+    setHeader('Cookie', opts.cookie);
+  }
+
+  const out: Record<string, string> = {};
+  for (const { key, value } of map.values()) {
+    out[key] = value;
+  }
+  return out;
+}
+
 /**
  * Resolves the Google Drive storage directory according to user specification:
  * 1. process.env.DRIVE_MEDIA_DIR or GOOGLE_DRIVE_PATH
- * 2. Local Google Drive Desktop path if present on Windows: G:\My Drive\PulseRadar_StreamRecorder_Package\Downloaded_Media
+ * 2. Local Google Drive Desktop path if present on Windows
  * 3. Fallback: <workspace>/data/downloaded_media
  */
 export function resolveDriveStorageRoot(customRoot?: string): string {
@@ -93,23 +153,45 @@ function sanitizeFileName(input: string): string {
   return input.replace(/[^a-zA-Z0-9_.-]/g, '_');
 }
 
+function inferImageExtension(mediaUrl: string): 'jpg' | 'png' | 'webp' {
+  try {
+    const pathname = new URL(mediaUrl).pathname.toLowerCase();
+    if (pathname.endsWith('.png')) return 'png';
+    if (pathname.endsWith('.webp')) return 'webp';
+  } catch {
+    // ignore malformed URL
+  }
+  return 'jpg';
+}
+
+function mimeForImageExt(ext: 'jpg' | 'png' | 'webp'): string {
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  return 'image/jpeg';
+}
+
 /**
  * Downloads a single media stream into the destination path atomically.
  */
 export async function downloadFileAtomic(
   mediaUrl: string,
   destPath: string,
-  timeoutMs = 30000
+  options?: number | DownloadFileOptions
 ): Promise<{ fileSize: number; mimeType: string }> {
+  const opts: DownloadFileOptions =
+    typeof options === 'number' ? { timeoutMs: options } : options || {};
+  const timeoutMs =
+    typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs)
+      ? opts.timeoutMs
+      : 30000;
+
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
   const tempPath = `${destPath}.tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   try {
+    const headers = mergeDownloadHeaders(opts);
     const resp = await fetch(mediaUrl, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        Referer: 'https://www.tiktok.com/',
-      },
+      headers,
       signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -151,101 +233,110 @@ interface ResolvedCandidate {
 }
 
 /**
- * Extracts candidate high quality media URLs from event metadata or TikWM public resolver.
+ * Extracts candidate high quality media URLs from event metadata or TikWM public resolver (TikTok only).
  */
 export async function resolveHighQualityMedia(
-  event: TikTokEvent,
+  event: WatcherEvent,
   timeoutMs = 10000
 ): Promise<ResolvedCandidate[]> {
   const candidates: ResolvedCandidate[] = [];
+  const seenUrls = new Set<string>();
+  const platform = (event.platform || 'TIKTOK').toUpperCase();
 
-  // Check metadata for direct playAddr or videoUrl
+  const pushVideo = (url: string) => {
+    const trimmed = url.trim();
+    if (!trimmed || seenUrls.has(trimmed)) return;
+    seenUrls.add(trimmed);
+    candidates.push({
+      url: trimmed,
+      ext: 'mp4',
+      mimeType: 'video/mp4',
+      isHighQuality: true,
+    });
+  };
+
+  const pushPhoto = (url: string) => {
+    const trimmed = url.trim();
+    if (!trimmed || seenUrls.has(trimmed)) return;
+    seenUrls.add(trimmed);
+    const ext = inferImageExtension(trimmed);
+    candidates.push({
+      url: trimmed,
+      ext,
+      mimeType: mimeForImageExt(ext),
+      isHighQuality: true,
+    });
+  };
+
   const meta = event.metadata || {};
-  if (typeof meta.videoUrl === 'string' && meta.videoUrl.trim()) {
-    candidates.push({
-      url: meta.videoUrl.trim(),
-      ext: 'mp4',
-      mimeType: 'video/mp4',
-      isHighQuality: true,
-    });
+
+  if (Array.isArray(meta.videoUrls) && meta.videoUrls.length > 0) {
+    for (const vUrl of meta.videoUrls) {
+      if (typeof vUrl === 'string' && vUrl.trim()) {
+        pushVideo(vUrl);
+      }
+    }
+  } else if (typeof meta.videoUrl === 'string' && meta.videoUrl.trim()) {
+    pushVideo(meta.videoUrl);
   } else if (typeof meta.playAddr === 'string' && meta.playAddr.trim()) {
-    candidates.push({
-      url: meta.playAddr.trim(),
-      ext: 'mp4',
-      mimeType: 'video/mp4',
-      isHighQuality: true,
-    });
+    pushVideo(meta.playAddr);
   }
 
-  // Check metadata for photo array
   if (Array.isArray(meta.photoUrls) && meta.photoUrls.length > 0) {
     for (const pUrl of meta.photoUrls) {
       if (typeof pUrl === 'string' && pUrl.trim()) {
-        candidates.push({
-          url: pUrl.trim(),
-          ext: 'jpg',
-          mimeType: 'image/jpeg',
-          isHighQuality: true,
-        });
+        pushPhoto(pUrl);
       }
     }
   }
 
-  // If already resolved from metadata, return candidates
   if (candidates.length > 0) {
     return candidates;
   }
 
-  // Fallback to TikWM high quality watermark-free API resolver for post/story URLs
-  const postUrl = event.url || `https://www.tiktok.com/@${event.username}/video/${event.itemId}`;
-  try {
-    const resolverUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(postUrl)}`;
-    const resp = await fetchWithTimeout(resolverUrl, {
-      timeoutMs,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        Accept: 'application/json',
-      },
-    });
+  // Fallback to TikWM high quality watermark-free API resolver ONLY for TikTok
+  if (platform === 'TIKTOK') {
+    const postUrl =
+      event.url || `https://www.tiktok.com/@${event.username}/video/${event.itemId}`;
+    try {
+      const resolverUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(postUrl)}`;
+      const resp = await fetchWithTimeout(resolverUrl, {
+        timeoutMs,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+          Accept: 'application/json',
+        },
+      });
 
-    if (resp.ok && resp.text) {
-      const parsed = safeJsonParse<{
-        code?: number;
-        data?: {
-          play?: string;
-          hdplay?: string;
-          wmplay?: string;
-          images?: string[];
-        };
-      }>(resp.text);
+      if (resp.ok && resp.text) {
+        const parsed = safeJsonParse<{
+          code?: number;
+          data?: {
+            play?: string;
+            hdplay?: string;
+            wmplay?: string;
+            images?: string[];
+          };
+        }>(resp.text);
 
-      if (parsed?.code === 0 && parsed.data) {
-        // High-definition watermark-free video
-        const bestPlay = parsed.data.hdplay || parsed.data.play || parsed.data.wmplay;
-        if (bestPlay) {
-          candidates.push({
-            url: bestPlay.startsWith('http') ? bestPlay : `https://www.tikwm.com${bestPlay}`,
-            ext: 'mp4',
-            mimeType: 'video/mp4',
-            isHighQuality: true,
-          });
-        }
+        if (parsed?.code === 0 && parsed.data) {
+          const bestPlay = parsed.data.hdplay || parsed.data.play || parsed.data.wmplay;
+          if (bestPlay) {
+            pushVideo(bestPlay.startsWith('http') ? bestPlay : `https://www.tikwm.com${bestPlay}`);
+          }
 
-        // Multi-image post
-        if (Array.isArray(parsed.data.images) && parsed.data.images.length > 0) {
-          for (const imgUrl of parsed.data.images) {
-            candidates.push({
-              url: imgUrl.startsWith('http') ? imgUrl : `https://www.tikwm.com${imgUrl}`,
-              ext: 'jpg',
-              mimeType: 'image/jpeg',
-              isHighQuality: true,
-            });
+          if (Array.isArray(parsed.data.images) && parsed.data.images.length > 0) {
+            for (const imgUrl of parsed.data.images) {
+              pushPhoto(
+                imgUrl.startsWith('http') ? imgUrl : `https://www.tikwm.com${imgUrl}`
+              );
+            }
           }
         }
       }
+    } catch {
+      // Non-fatal, fallback to streamUrl or thumbnailUrl
     }
-  } catch (err) {
-    // Non-fatal, fallback to streamUrl or coverUrl
   }
 
   // Final fallback: streamUrl or thumbnailUrl
@@ -258,10 +349,12 @@ export async function resolveHighQualityMedia(
         isHighQuality: false,
       });
     } else if (event.thumbnailUrl && event.thumbnailUrl.trim()) {
+      const thumbUrl = event.thumbnailUrl.trim();
+      const ext = inferImageExtension(thumbUrl);
       candidates.push({
-        url: event.thumbnailUrl.trim(),
-        ext: 'jpg',
-        mimeType: 'image/jpeg',
+        url: thumbUrl,
+        ext,
+        mimeType: mimeForImageExt(ext),
         isHighQuality: false,
       });
     }
@@ -293,10 +386,11 @@ export class MediaDownloader {
 
   /**
    * Automatically downloads all media associated with a post or story event
-   * into <Drive_Folder>/<username>/<posts|stories>/<timestamp>_<id>.<ext>
+   * into <Drive_Folder>/<username>/<posts|stories>/<[platform_]timestamp_id>.<ext>
    * and dispatches to configured cloud storage providers (Google Drive API / Telegram).
    */
-  async downloadEventMedia(event: TikTokEvent): Promise<DownloadedMediaResult> {
+  async downloadEventMedia(event: WatcherEvent): Promise<DownloadedMediaResult> {
+    const platform = ((event.platform || 'TIKTOK').toUpperCase() as LivePlatform);
     const downloadedAt = new Date().toISOString();
     const datePrefix = downloadedAt.slice(0, 10).replace(/-/g, '');
     const cleanId = sanitizeFileName(event.itemId || 'unknown');
@@ -304,6 +398,7 @@ export class MediaDownloader {
 
     const result: DownloadedMediaResult = {
       success: false,
+      platform,
       itemId: event.itemId,
       username: event.username,
       eventType: event.eventType,
@@ -321,14 +416,25 @@ export class MediaDownloader {
         return result;
       }
 
+      const rawDlHeaders = event.metadata?.downloadHeaders;
+      const downloadHeaders: Record<string, string> = {};
+      if (rawDlHeaders && typeof rawDlHeaders === 'object' && !Array.isArray(rawDlHeaders)) {
+        for (const [k, v] of Object.entries(rawDlHeaders)) {
+          if (typeof v === 'string' && v.trim()) {
+            downloadHeaders[k] = v.trim();
+          }
+        }
+      }
+
+      const platformPrefix = platform !== 'TIKTOK' ? `${platform.toLowerCase()}_` : '';
+
       for (let idx = 0; idx < candidates.length; idx++) {
         const candidate = candidates[idx];
         const suffix = candidates.length > 1 ? `_${idx + 1}` : '';
-        const fileName = `${datePrefix}_${cleanId}${suffix}.${candidate.ext}`;
+        const fileName = `${platformPrefix}${datePrefix}_${cleanId}${suffix}.${candidate.ext}`;
         const destPath = path.join(targetDir, fileName);
         let fileSize = 0;
 
-        // If file already exists and is non-empty, avoid redundant download
         if (fs.existsSync(destPath)) {
           const stats = fs.statSync(destPath);
           if (stats.size > 0) {
@@ -337,16 +443,20 @@ export class MediaDownloader {
         }
 
         if (fileSize === 0) {
-          const downloaded = await downloadFileAtomic(candidate.url, destPath, this.timeoutMs);
+          const downloaded = await downloadFileAtomic(candidate.url, destPath, {
+            timeoutMs: this.timeoutMs,
+            referer: getDefaultRefererForPlatform(platform),
+            headers: downloadHeaders,
+          });
           fileSize = downloaded.fileSize;
         }
 
-        // Upload to active cloud storage providers (Google Drive API & Telegram)
         let driveLink: string | undefined;
         let telegramLink: string | undefined;
 
         try {
           const cloudResult = await this.storageManager.uploadMedia({
+            platform,
             localFilePath: destPath,
             fileName,
             fileSize,
@@ -384,7 +494,7 @@ export class MediaDownloader {
       return result;
     } catch (err) {
       result.error = err instanceof Error ? err.message : String(err);
-      result.success = result.files.length > 0; // partial success if some files downloaded
+      result.success = result.files.length > 0;
       return result;
     }
   }
@@ -393,4 +503,3 @@ export class MediaDownloader {
 export function createMediaDownloader(options?: MediaDownloaderOptions): MediaDownloader {
   return new MediaDownloader(options);
 }
-

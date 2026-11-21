@@ -1,7 +1,17 @@
 import { checkTikTokLive } from '../../liveCheckers/tiktokChecker';
-import type { LiveCheckResult } from '../../liveCheckers/types';
-import type { TikTokEvent, WatcherEventType } from '../types';
-import { type BaseCollector, normalizeUsername } from './base';
+import type { LiveCheckResult, LivePlatform } from '../../liveCheckers/types';
+import type {
+  CollectorFetchResult,
+  TikTokEvent,
+  WatcherEvent,
+  WatcherEventType,
+} from '../types';
+import {
+  type BaseCollector,
+  classifyHttpDiagnostic,
+  normalizeCookieValue,
+  normalizeUsername,
+} from './base';
 
 export type TikTokLiveCheckerFn = (username: string, cookie?: string) => Promise<LiveCheckResult>;
 
@@ -36,22 +46,101 @@ export function extractRoomIdFromStream(streamUrl?: string | null, fallbackKey?:
 
 export class TikTokLiveCollector implements BaseCollector {
   readonly name = 'tiktok_live';
+  readonly platform: LivePlatform = 'TIKTOK';
   readonly eventType: WatcherEventType = 'live';
+  readonly supported = true;
 
   private cookie: string;
   private checker: TikTokLiveCheckerFn;
 
   constructor(options?: TikTokLiveCollectorOptions) {
-    this.cookie = typeof options?.cookie === 'string' ? options.cookie.trim() : '';
+    this.cookie = normalizeCookieValue(options?.cookie);
     this.checker = options?.checker || checkTikTokLive;
   }
 
   setCookie(cookie: string): void {
-    this.cookie = typeof cookie === 'string' ? cookie.trim() : '';
+    this.cookie = normalizeCookieValue(cookie);
+  }
+
+  async fetchWithDiagnostics(rawUsername: string): Promise<CollectorFetchResult<WatcherEvent>> {
+    const usedCookie = Boolean(this.cookie);
+    const username = normalizeUsername(rawUsername, 'TIKTOK');
+    if (!username) {
+      return {
+        status: 'ERROR',
+        events: [],
+        reason: 'Invalid TIKTOK username',
+        usedCookie,
+      };
+    }
+
+    try {
+      const result = await this.checker(username, this.cookie);
+
+      if (result.status === 'ERROR') {
+        const msg = result.message || 'Check failed';
+        const httpMatch = msg.match(/\bHTTP\s+(\d{3})\b/i);
+        if (httpMatch?.[1]) {
+          const httpStatus = Number(httpMatch[1]);
+          const classified = classifyHttpDiagnostic(httpStatus, msg, usedCookie, 'TikTok');
+          return {
+            status: classified.status,
+            events: [],
+            reason: `[tiktok_live] Check failed for @${username}: ${msg}`,
+            httpStatus,
+            usedCookie,
+          };
+        }
+        return {
+          status: 'ERROR',
+          events: [],
+          reason: `[tiktok_live] Check failed for @${username}: ${msg}`,
+          usedCookie,
+        };
+      }
+
+      if (result.status === 'NOT_LIVE') {
+        return {
+          status: 'OK',
+          events: [],
+          usedCookie,
+        };
+      }
+
+      const roomId = extractRoomIdFromStream(result.streamUrl, username);
+      const event: TikTokEvent = {
+        platform: 'TIKTOK',
+        username,
+        eventType: 'live',
+        itemId: roomId,
+        url: `https://www.tiktok.com/@${username}/live`,
+        title: result.title || `TikTok Live (@${username})`,
+        thumbnailUrl: null,
+        streamUrl: result.streamUrl,
+        detectedAt: result.checkedAt || new Date().toISOString(),
+        metadata: {
+          method: result.method,
+          qualityInfo: result.qualityInfo,
+        },
+      };
+
+      return {
+        status: 'OK',
+        events: [event],
+        usedCookie,
+      };
+    } catch (err) {
+      return {
+        status: 'ERROR',
+        events: [],
+        reason: err instanceof Error ? err.message : String(err),
+        usedCookie,
+      };
+    }
   }
 
   async fetch(rawUsername: string): Promise<TikTokEvent[]> {
-    const username = normalizeUsername(rawUsername);
+    const username = normalizeUsername(rawUsername, 'TIKTOK');
     if (!username) {
       return [];
     }
@@ -68,6 +157,7 @@ export class TikTokLiveCollector implements BaseCollector {
 
     const roomId = extractRoomIdFromStream(result.streamUrl, username);
     const event: TikTokEvent = {
+      platform: 'TIKTOK',
       username,
       eventType: 'live',
       itemId: roomId,

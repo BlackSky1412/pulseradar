@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { extractTargetUsername } from '../utils/scannerEngine';
 
 export interface UserAvatarProps {
   target: string;
   username?: string;
+  nickname?: string;
   platform?: string;
   avatarUrl?: string | null;
   isLive?: boolean;
@@ -40,23 +42,8 @@ export function extractDisplayUsername(rawTarget: string, explicitUsername?: str
   const trimmed = rawTarget.trim();
   if (!trimmed) return 'User';
 
-  // If it's a URL
-  if (trimmed.includes('tiktok.com/')) {
-    const match = trimmed.match(/tiktok\.com\/@([a-zA-Z0-9_.]+)/);
-    if (match?.[1]) return match[1];
-  }
-  if (trimmed.includes('instagram.com/')) {
-    const match = trimmed.match(/instagram\.com\/([a-zA-Z0-9_.]+)/);
-    if (match?.[1]) return match[1].replace(/^@/, '');
-  }
-  if (trimmed.includes('facebook.com/')) {
-    const match = trimmed.match(/facebook\.com\/([a-zA-Z0-9_.]+)/);
-    if (match?.[1]) return match[1].replace(/^@/, '');
-  }
-  if (trimmed.includes('x.com/') || trimmed.includes('twitter.com/')) {
-    const match = trimmed.match(/(?:x|twitter)\.com\/([a-zA-Z0-9_.]+)/);
-    if (match?.[1]) return match[1].replace(/^@/, '');
-  }
+  const extracted = extractTargetUsername(trimmed);
+  if (extracted) return extracted;
 
   return trimmed.replace(/^@+/, '').split(/[/?#]/)[0] || trimmed;
 }
@@ -64,6 +51,7 @@ export function extractDisplayUsername(rawTarget: string, explicitUsername?: str
 export const UserAvatar: React.FC<UserAvatarProps> = ({
   target,
   username: explicitUsername,
+  nickname,
   platform = 'tiktok',
   avatarUrl,
   isLive = false,
@@ -93,6 +81,16 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
       : normPlatform === 'facebook'
       ? `https://unavatar.io/facebook/${encodeURIComponent(cleanName)}`
       : `https://unavatar.io/${encodeURIComponent(cleanName)}`);
+
+  useEffect(() => {
+    setImgError(false);
+    setImgLoaded(false);
+  }, [candidateUrl]);
+
+  const titleLabel =
+    nickname && nickname.trim() && nickname.trim() !== cleanName
+      ? `${nickname.trim()} (@${cleanName}) (${platform.toUpperCase()})`
+      : `${cleanName} (${platform.toUpperCase()})`;
 
   const sizeClasses = {
     xs: 'w-6 h-6 text-[10px]',
@@ -124,7 +122,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
         isLive ? 'ring-2 ring-rose-500 ring-offset-2 ring-offset-slate-950 rounded-full' : ''
       } ${className}`}
       aria-label={`${cleanName} (${platform.toUpperCase()})`}
-      title={`${cleanName} (${platform.toUpperCase()})`}
+      title={titleLabel}
     >
       {/* Base Avatar Container */}
       <div

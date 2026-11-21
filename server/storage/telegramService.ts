@@ -1,9 +1,35 @@
 import fs from 'node:fs';
+import type { LivePlatform } from '../liveCheckers/types';
 import type {
   StorageUploadParams,
   TelegramConfig,
   UploadProviderResult,
 } from './types';
+
+export function escapeTelegramHtml(input: string): string {
+  return input
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+export function escapeTelegramAttr(input: string): string {
+  return escapeTelegramHtml(input).replace(/"/g, '&quot;');
+}
+
+function getPlatformMeta(platform?: LivePlatform): { badge: string; hashtag: string } {
+  switch (platform) {
+    case 'INSTAGRAM':
+      return { badge: 'Instagram', hashtag: '#Instagram' };
+    case 'FACEBOOK':
+      return { badge: 'Facebook', hashtag: '#Facebook' };
+    case 'X':
+      return { badge: 'X', hashtag: '#X' };
+    case 'TIKTOK':
+    default:
+      return { badge: 'TikTok', hashtag: '#TikTok' };
+  }
+}
 
 export class TelegramService {
   private config: TelegramConfig;
@@ -14,42 +40,79 @@ export class TelegramService {
     const envChatId = process.env.TELEGRAM_CHAT_ID?.trim();
     const envEnabled = process.env.TELEGRAM_STORAGE_ENABLED !== 'false';
 
+    const hasTokenProp = Boolean(
+      config && Object.prototype.hasOwnProperty.call(config, 'botToken')
+    );
+    const hasChatIdProp = Boolean(
+      config && Object.prototype.hasOwnProperty.call(config, 'chatId')
+    );
+
+    const botToken = hasTokenProp ? config?.botToken?.trim() || undefined : envToken;
+    const chatId = hasChatIdProp ? config?.chatId?.trim() || undefined : envChatId;
+
     this.config = {
-      botToken: config?.botToken ?? envToken,
-      chatId: config?.chatId ?? envChatId,
-      enabled: config?.enabled ?? (envEnabled && Boolean(envToken && envChatId)),
+      botToken,
+      chatId,
+      enabled: config?.enabled ?? (envEnabled && Boolean(botToken && chatId)),
     };
   }
 
   isConfigured(): boolean {
-    return Boolean(this.config.botToken && this.config.chatId);
+    return Boolean(this.config.enabled && this.config.botToken && this.config.chatId);
   }
 
   getStatus() {
+    const configured = Boolean(this.config.botToken && this.config.chatId);
     return {
-      enabled: this.config.enabled && this.isConfigured(),
-      configured: this.isConfigured(),
+      enabled: this.isConfigured(),
+      configured,
       chatId: this.config.chatId,
       lastError: this.lastError,
     };
   }
 
-  private formatCaption(params: StorageUploadParams): string {
+  formatCaption(params: StorageUploadParams): string {
     const typeLabel = params.eventType.toUpperCase();
-    const title = params.title || params.fileName;
-    const cleanUsername = params.username.replace(/[^a-zA-Z0-9_]/g, '');
+    const rawTitle = (params.title || params.fileName || '').trim();
+    const cleanUsernameTag = params.username.replace(/[^a-zA-Z0-9_]/g, '') || 'user';
+    const safeUsername = escapeTelegramHtml(params.username);
+    const { badge, hashtag } = getPlatformMeta(params.platform);
 
-    let caption = `⚡ <b>PulseRadar Media Lưu Trữ</b>\n`;
-    caption += `👤 <b>Tài khoản:</b> @${params.username}\n`;
-    caption += `📌 <b>Loại sự kiện:</b> ${typeLabel}\n`;
-    caption += `📝 <b>Nội dung:</b> ${title.slice(0, 300)}\n`;
-    if (params.sourceUrl) {
-      caption += `🔗 <b>Liên kết gốc:</b> <a href="${params.sourceUrl}">Xem tại đây</a>\n`;
+    const safeUrl =
+      params.sourceUrl && /^https?:\/\//i.test(params.sourceUrl.trim())
+        ? escapeTelegramAttr(params.sourceUrl.trim())
+        : '';
+
+    const buildCaption = (titleMaxLen: number): string => {
+      const slicedRaw =
+        rawTitle.length > titleMaxLen
+          ? `${rawTitle.slice(0, Math.max(0, titleMaxLen - 1))}…`
+          : rawTitle;
+      const safeTitle = escapeTelegramHtml(slicedRaw);
+
+      let caption = `⚡ <b>PulseRadar Media Lưu Trữ</b>\n`;
+      caption += `🌐 <b>Nền tảng:</b> ${badge}\n`;
+      caption += `👤 <b>Tài khoản:</b> @${safeUsername}\n`;
+      caption += `📌 <b>Loại sự kiện:</b> ${typeLabel}\n`;
+      caption += `📝 <b>Nội dung:</b> ${safeTitle}\n`;
+      if (safeUrl) {
+        caption += `🔗 <b>Liên kết gốc:</b> <a href="${safeUrl}">Xem tại đây</a>\n`;
+      }
+      caption += `\n#PulseRadar ${hashtag} #${params.eventType} #${cleanUsernameTag}`;
+      return caption;
+    };
+
+    let titleLimit = 300;
+    let caption = buildCaption(titleLimit);
+    while (caption.length > 1024 && titleLimit > 20) {
+      titleLimit = Math.max(20, titleLimit - Math.ceil((caption.length - 1000) / 2));
+      caption = buildCaption(titleLimit);
     }
-    caption += `\n#PulseRadar #${params.eventType} #${cleanUsername}`;
+    if (caption.length > 1024) {
+      caption = buildCaption(0);
+    }
 
-    // Telegram caption maximum length is 1024 characters
-    return caption.slice(0, 1020);
+    return caption;
   }
 
   async uploadFile(params: StorageUploadParams): Promise<UploadProviderResult> {
@@ -57,7 +120,7 @@ export class TelegramService {
       return {
         provider: 'telegram',
         success: false,
-        error: 'Telegram Bot Token hoặc Chat ID chưa được cấu hình',
+        error: 'Telegram Bot Token hoặc Chat ID chưa được cấu hình hoặc đã tắt',
       };
     }
 
@@ -71,7 +134,6 @@ export class TelegramService {
       }
 
       const fileStats = fs.statSync(params.localFilePath);
-      // Telegram Bot API standard file upload limit is 50MB
       const maxSizeBytes = 50 * 1024 * 1024;
       if (fileStats.size > maxSizeBytes) {
         this.lastError = `File size (${(fileStats.size / 1024 / 1024).toFixed(1)}MB) exceeds Telegram Bot 50MB limit`;
@@ -104,7 +166,9 @@ export class TelegramService {
       formData.append('caption', this.formatCaption(params));
       formData.append('parse_mode', 'HTML');
 
-      const blob = new Blob([fileBuffer], { type: params.mimeType || 'application/octet-stream' });
+      const blob = new Blob([fileBuffer], {
+        type: params.mimeType || 'application/octet-stream',
+      });
       formData.append(fileField, blob, params.fileName);
 
       const apiUrl = `https://api.telegram.org/bot${this.config.botToken}/${endpoint}`;

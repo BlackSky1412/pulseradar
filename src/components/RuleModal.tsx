@@ -17,16 +17,23 @@ import {
 import {
   type KeywordRuleItem,
   type MatchType,
+  type PlatformCookies,
   type SocialPlatform,
+  type TargetProfileMeta,
+  type UserValidationResult,
   type WebhookServerItem,
   PLATFORM_LABELS,
+  PLATFORM_TO_SOCIAL_KEY,
   SOURCE_DEFAULT_DOMAINS,
-  MATCH_TYPE_LABELS,
+  extractTargetUsername,
+  getTargetProfileKey,
+  isLiveUserTarget,
   validateKeywordRuleInput,
   parseTrackedTargets,
   parseSourceMeta,
   resolvePlatformProfileUrl,
 } from '../utils/scannerEngine';
+import { UserAvatar } from './UserAvatar';
 
 interface RuleModalProps {
   isOpen: boolean;
@@ -54,6 +61,9 @@ interface RuleModalProps {
   editingRule: KeywordRuleItem | null;
   servers: WebhookServerItem[];
   defaultPlatform?: SocialPlatform;
+  cookies?: Partial<PlatformCookies>;
+  targetProfiles?: Record<string, TargetProfileMeta>;
+  onProfileValidated?: (updates: Record<string, TargetProfileMeta>) => void;
 }
 
 const ALL_PLATFORMS: SocialPlatform[] = ['reddit', 'hackernews', 'github', 'bluesky'];
@@ -85,6 +95,14 @@ const PLATFORM_COLORS: Record<SocialPlatform, { border: string; bg: string; text
   },
 };
 
+interface BlockedCandidate {
+  raw: string;
+  canonical: string;
+  profileKey: string;
+  meta: TargetProfileMeta;
+  reason: string;
+}
+
 export function RuleModal({
   isOpen,
   onClose,
@@ -92,6 +110,9 @@ export function RuleModal({
   editingRule,
   servers,
   defaultPlatform,
+  cookies,
+  targetProfiles,
+  onProfileValidated,
 }: RuleModalProps) {
   const initialPlatform: SocialPlatform = editingRule
     ? ((editingRule.platforms.split(',')[0]?.trim() as SocialPlatform) || 'reddit')
@@ -138,6 +159,8 @@ export function RuleModal({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
+  const [modalProfiles, setModalProfiles] = useState<Record<string, TargetProfileMeta>>({});
+  const [blockedCandidates, setBlockedCandidates] = useState<BlockedCandidate[]>([]);
 
   useEffect(() => {
     if (editingRule) {
@@ -180,6 +203,8 @@ export function RuleModal({
       setFirstRunWarmup(true);
     }
     setErrorMsg(null);
+    setBlockedCandidates([]);
+    setModalProfiles({});
   }, [editingRule, isOpen, servers, defaultPlatform]);
 
   if (!isOpen) return null;
@@ -188,6 +213,7 @@ export function RuleModal({
     const trimmed = newTargetInput.trim();
     if (!trimmed || isValidating) return;
     setErrorMsg(null);
+    setBlockedCandidates([]);
 
     const parts = trimmed
       .split(',')
@@ -196,7 +222,11 @@ export function RuleModal({
 
     setIsValidating(true);
     const validToAdd: string[] = [];
+    const validatedUpdates: Record<string, TargetProfileMeta> = {};
+    const blockedToConfirm: BlockedCandidate[] = [];
     const invalidErrors: string[] = [];
+    const platformKey = PLATFORM_TO_SOCIAL_KEY[selectedPlatform];
+    const platformCookie = cookies?.[platformKey]?.trim();
 
     for (const part of parts) {
       try {
@@ -206,25 +236,79 @@ export function RuleModal({
           body: JSON.stringify({
             target: part,
             platform: selectedPlatform,
+            ...(platformCookie ? { cookie: platformCookie } : {}),
           }),
         });
-        const data = await resp.json();
-        if (data?.ok && data?.result?.valid) {
-          const canonicalTarget = part.startsWith('http')
-            ? part
-            : part.startsWith('@')
-            ? part
-            : `@${data.result.username || part}`;
+        const data = (await resp.json()) as { ok?: boolean; result?: UserValidationResult };
+        const result = data?.result;
+        const canonicalTarget = part.startsWith('http')
+          ? part
+          : part.startsWith('@')
+          ? part
+          : `@${result?.username || part}`;
+        const profileKey = getTargetProfileKey(selectedPlatform, result?.username || part);
+
+        if (data?.ok && result?.valid) {
           validToAdd.push(canonicalTarget);
+          if (profileKey) {
+            validatedUpdates[profileKey] = {
+              ...(result.id ? { id: result.id } : {}),
+              ...(result.nickname ? { nickname: result.nickname } : {}),
+              ...(result.avatarUrl ? { avatarUrl: result.avatarUrl } : {}),
+              profileUrl:
+                result.profileUrl || resolvePlatformProfileUrl(canonicalTarget, selectedPlatform),
+              status: result.status || 'VALID',
+              ...(result.authMode ? { authMode: result.authMode } : {}),
+              updatedAt: new Date().toISOString(),
+            };
+          }
+        } else if (
+          result &&
+          (result.status === 'AUTH_REQUIRED' ||
+            result.status === 'BLOCKED' ||
+            result.status === 'ERROR') &&
+          isLiveUserTarget(part) &&
+          extractTargetUsername(part, selectedPlatform)
+        ) {
+          const reason =
+            result.error ||
+            `Nền tảng ${PLATFORM_LABELS[selectedPlatform]} chặn truy cập ẩn danh hoặc yêu cầu Cookie.`;
+          blockedToConfirm.push({
+            raw: part,
+            canonical: canonicalTarget,
+            profileKey,
+            meta: {
+              profileUrl:
+                result.profileUrl || resolvePlatformProfileUrl(canonicalTarget, selectedPlatform),
+              status: result.status,
+              ...(result.authMode ? { authMode: result.authMode } : {}),
+              updatedAt: new Date().toISOString(),
+            },
+            reason,
+          });
         } else {
           invalidErrors.push(
-            data?.result?.error || `Tài khoản "${part}" không tồn tại hoặc không hợp lệ trên ${PLATFORM_LABELS[selectedPlatform]}.`
+            result?.error ||
+              `Tài khoản "${part}" không tồn tại hoặc không hợp lệ trên ${PLATFORM_LABELS[selectedPlatform]}.`
           );
         }
-      } catch (err) {
-        const clean = part.replace(/^@+/, '');
-        if (clean.length >= 2 && !clean.includes(' ')) {
-          validToAdd.push(part.startsWith('http') || part.startsWith('@') ? part : `@${clean}`);
+      } catch {
+        const extracted = extractTargetUsername(part, selectedPlatform);
+        if (isLiveUserTarget(part) && extracted) {
+          const canonicalTarget =
+            part.startsWith('http') || part.startsWith('@') ? part : `@${extracted}`;
+          const profileKey = getTargetProfileKey(selectedPlatform, extracted);
+          blockedToConfirm.push({
+            raw: part,
+            canonical: canonicalTarget,
+            profileKey,
+            meta: {
+              profileUrl: resolvePlatformProfileUrl(canonicalTarget, selectedPlatform),
+              status: 'ERROR',
+              updatedAt: new Date().toISOString(),
+            },
+            reason: `Không thể kết nối máy chủ để xác thực "${part}".`,
+          });
         } else {
           invalidErrors.push(`Tên tài khoản "${part}" không đúng định dạng.`);
         }
@@ -235,12 +319,41 @@ export function RuleModal({
 
     if (validToAdd.length > 0) {
       setTargets(prev => Array.from(new Set([...prev, ...validToAdd])));
+      if (Object.keys(validatedUpdates).length > 0) {
+        setModalProfiles(prev => ({ ...prev, ...validatedUpdates }));
+        onProfileValidated?.(validatedUpdates);
+      }
+    }
+
+    if (blockedToConfirm.length > 0) {
+      setBlockedCandidates(blockedToConfirm);
+    }
+
+    if (invalidErrors.length === 0 && blockedToConfirm.length === 0) {
       setNewTargetInput('');
     }
 
     if (invalidErrors.length > 0) {
       setErrorMsg(`❌ Không thể thêm: ${invalidErrors.join(' | ')}`);
     }
+  };
+
+  const handleConfirmBlockedCandidates = () => {
+    if (blockedCandidates.length === 0) return;
+    const toAdd = blockedCandidates.map(c => c.canonical);
+    const updates: Record<string, TargetProfileMeta> = {};
+    for (const candidate of blockedCandidates) {
+      if (candidate.profileKey) {
+        updates[candidate.profileKey] = candidate.meta;
+      }
+    }
+    setTargets(prev => Array.from(new Set([...prev, ...toAdd])));
+    if (Object.keys(updates).length > 0) {
+      setModalProfiles(prev => ({ ...prev, ...updates }));
+      onProfileValidated?.(updates);
+    }
+    setBlockedCandidates([]);
+    setNewTargetInput('');
   };
 
   const handleRemoveTarget = (targetToRemove: string) => {
@@ -250,6 +363,7 @@ export function RuleModal({
   const handlePlatformSelect = (p: SocialPlatform) => {
     setSelectedPlatform(p);
     setSourceDomain(SOURCE_DEFAULT_DOMAINS[p]);
+    setBlockedCandidates([]);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -447,6 +561,31 @@ export function RuleModal({
               </button>
             </div>
 
+            {blockedCandidates.length > 0 && (
+              <div className="p-3 bg-amber-950/50 border border-amber-700/70 rounded-xl space-y-2 text-xs text-amber-200">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                  <div className="space-y-1 min-w-0">
+                    <p className="font-semibold text-amber-100">
+                      Không thể xác thực tự động ({blockedCandidates.map(c => c.canonical).join(', ')})
+                    </p>
+                    <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                      {blockedCandidates.map(c => c.reason).join(' | ')}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={handleConfirmBlockedCandidates}
+                    className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-amber-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors"
+                  >
+                    Thêm dù chưa xác thực (chỉ lưu cú pháp)
+                  </button>
+                </div>
+              </div>
+            )}
+
             {targets.length === 0 ? (
               <div className="p-4 text-center border border-dashed border-slate-800 rounded-xl bg-slate-950/40 text-xs text-slate-500">
                 Chưa có mục tiêu nào. Hãy nhập @username hoặc URL kênh ở ô trên rồi nhấn Thêm.
@@ -455,12 +594,40 @@ export function RuleModal({
               <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl divide-y divide-slate-800/80 max-h-48 overflow-y-auto">
                 {targets.map(t => {
                   const isUser = t.startsWith('@');
+                  const profileKey = getTargetProfileKey(selectedPlatform, t);
+                  const profile = profileKey
+                    ? modalProfiles[profileKey] ?? targetProfiles?.[profileKey]
+                    : undefined;
+                  const extractedName = extractTargetUsername(t, selectedPlatform);
+                  const profileHref = resolvePlatformProfileUrl(t, selectedPlatform);
+                  const showNickname =
+                    profile?.nickname &&
+                    profile.nickname.trim() &&
+                    profile.nickname.trim() !== extractedName;
+                  const isUnverified =
+                    profile?.status === 'AUTH_REQUIRED' ||
+                    profile?.status === 'BLOCKED' ||
+                    profile?.status === 'ERROR';
+
                   return (
                     <div
                       key={t}
                       className="py-1.5 first:pt-0 last:pb-0 flex items-center justify-between gap-2 text-xs"
                     >
                       <div className="flex items-center flex-wrap gap-2 font-mono min-w-0 flex-1">
+                        <UserAvatar
+                          target={t}
+                          platform={PLATFORM_TO_SOCIAL_KEY[selectedPlatform]}
+                          avatarUrl={profile?.avatarUrl}
+                          nickname={profile?.nickname}
+                          size="xs"
+                          showPlatformBadge={false}
+                        />
+                        {showNickname && (
+                          <span className="text-slate-300 font-sans text-[11px] font-semibold truncate max-w-[140px]">
+                            {profile!.nickname}
+                          </span>
+                        )}
                         <span
                           className={`break-all ${
                             isUser ? 'text-indigo-300 font-semibold' : 'text-slate-200 font-medium'
@@ -468,19 +635,26 @@ export function RuleModal({
                         >
                           {t}
                         </span>
-                        <a
-                          href={resolvePlatformProfileUrl(t, selectedPlatform)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center justify-center p-1 rounded-md text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
-                          title={`Mở trang ${PLATFORM_LABELS[selectedPlatform]} của ${t}`}
-                          aria-label={`Mở trang ${PLATFORM_LABELS[selectedPlatform]} của ${t}`}
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                        </a>
+                        {profileHref && (
+                          <a
+                            href={profileHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors shrink-0"
+                            title={`Mở trang ${PLATFORM_LABELS[selectedPlatform]} của ${t}`}
+                            aria-label={`Mở trang ${PLATFORM_LABELS[selectedPlatform]} của ${t}`}
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        )}
                         <span className="text-slate-500 font-sans text-[11px]">
                           · {isUser ? 'Tài khoản User' : 'URL / Từ khóa'}
                         </span>
+                        {isUnverified && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-sans bg-amber-950/60 border border-amber-700/60 text-amber-300">
+                            Chưa xác thực
+                          </span>
+                        )}
                       </div>
                       <button
                         type="button"

@@ -239,3 +239,210 @@ test('StorageManager: uploads to mock Google Drive and Telegram concurrently', a
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test('TelegramService: enabled flag, platform hashtags, HTML escaping & safe truncation', async () => {
+  const prevToken = process.env.TELEGRAM_BOT_TOKEN;
+  const prevChat = process.env.TELEGRAM_CHAT_ID;
+  delete process.env.TELEGRAM_BOT_TOKEN;
+  delete process.env.TELEGRAM_CHAT_ID;
+
+  try {
+    // 1. Constructor without enabled defaults to true when credentials provided, even when env is unset
+    const activeTele = new TelegramService({
+      botToken: '123:ABC',
+      chatId: '-100111',
+    });
+    assert.equal(activeTele.isConfigured(), true);
+    assert.equal(activeTele.getStatus().enabled, true);
+
+    // 2. enabled: false disables isConfigured and prevents fetch in uploadFile
+    const disabledTele = new TelegramService({
+      botToken: '123:ABC',
+      chatId: '-100111',
+      enabled: false,
+    });
+    assert.equal(disabledTele.isConfigured(), false);
+    assert.equal(disabledTele.getStatus().enabled, false);
+    assert.equal(disabledTele.getStatus().configured, true);
+
+    const origFetch = globalThis.fetch;
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const uploadRes = await disabledTele.uploadFile({
+        localFilePath: '/nonexistent.mp4',
+        fileName: 'nonexistent.mp4',
+        fileSize: 10,
+        mimeType: 'video/mp4',
+        platform: 'INSTAGRAM',
+        username: 'ig_user',
+        eventType: 'post',
+      });
+      assert.equal(uploadRes.success, false);
+      assert.equal(fetchCalled, false);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+
+    // 3. Platform badges/hashtags + HTML escaping + safe tag boundary on very long title
+    const igCaption = activeTele.formatCaption({
+      localFilePath: '/tmp/a.mp4',
+      fileName: 'a.mp4',
+      fileSize: 100,
+      mimeType: 'video/mp4',
+      platform: 'INSTAGRAM',
+      username: 'user<script>',
+      eventType: 'post',
+      title: `Title with <script>alert(1)</script> & "quotes" ${'A'.repeat(1200)}`,
+      sourceUrl: 'https://www.instagram.com/p/C1/?a=1&b="2"',
+    });
+    assert.ok(igCaption.includes('#Instagram'));
+    assert.ok(igCaption.includes('<b>Nền tảng:</b> Instagram'));
+    assert.ok(!igCaption.includes('<script>'));
+    assert.ok(igCaption.includes('&lt;script&gt;alert(1)&lt;/script&gt; &amp; "quotes"'));
+    assert.ok(igCaption.includes('<a href="https://www.instagram.com/p/C1/?a=1&amp;b=&quot;2&quot;">Xem tại đây</a>'));
+    assert.ok(igCaption.length <= 1024);
+
+    const fbCaption = activeTele.formatCaption({
+      localFilePath: '/tmp/b.mp4',
+      fileName: 'b.mp4',
+      fileSize: 100,
+      mimeType: 'video/mp4',
+      platform: 'FACEBOOK',
+      username: 'fb_user',
+      eventType: 'story',
+    });
+    assert.ok(fbCaption.includes('#Facebook'));
+
+    const xCaption = activeTele.formatCaption({
+      localFilePath: '/tmp/c.mp4',
+      fileName: 'c.mp4',
+      fileSize: 100,
+      mimeType: 'video/mp4',
+      platform: 'X',
+      username: 'x_user',
+      eventType: 'post',
+    });
+    assert.ok(xCaption.includes('#X'));
+  } finally {
+    if (prevToken !== undefined) process.env.TELEGRAM_BOT_TOKEN = prevToken;
+    if (prevChat !== undefined) process.env.TELEGRAM_CHAT_ID = prevChat;
+  }
+});
+
+test('GoogleDriveService: enabled check and platform folder/description context', async () => {
+  const { privateKey } = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+
+  const disabledDrive = new GoogleDriveService({
+    enabled: false,
+    serviceAccount: { client_email: 'bot@test.iam.gserviceaccount.com', private_key: privateKey },
+  });
+  assert.equal(disabledDrive.isConfigured(), false);
+  assert.equal(disabledDrive.getStatus().enabled, false);
+  assert.equal(disabledDrive.getStatus().configured, true);
+
+  const tempDir = createTempDir('gdrive_platform');
+  const dummyFile = path.join(tempDir, 'instagram_post.mp4');
+  fs.writeFileSync(dummyFile, 'video');
+
+  const createdFolders: Array<{ name: string; parents?: string[] }> = [];
+  const uploadedMetadatas: Array<{ description?: string; parents?: string[] }> = [];
+  const origFetch = globalThis.fetch;
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('oauth/token')) {
+      return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), {
+        status: 200,
+      });
+    }
+    if (url.includes('/upload/drive/v3/files')) {
+      const rawBody = Buffer.isBuffer(init?.body)
+        ? init.body.toString('utf-8')
+        : String(init?.body || '');
+      const jsonMatch = rawBody.match(/\{[\s\S]*?"description"[\s\S]*?\}/);
+      if (jsonMatch?.[0]) {
+        uploadedMetadatas.push(JSON.parse(jsonMatch[0]));
+      }
+      return new Response(JSON.stringify({ id: 'file_1', name: 'instagram_post.mp4' }), {
+        status: 200,
+      });
+    }
+    if (url.includes('/drive/v3/files?') && (!init?.method || init.method === 'GET')) {
+      return new Response(JSON.stringify({ files: [] }), { status: 200 });
+    }
+    if (url.includes('/drive/v3/files?') && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body || '{}')) as { name: string; parents?: string[] };
+      createdFolders.push(body);
+      return new Response(JSON.stringify({ id: `folder_${body.name}` }), { status: 200 });
+    }
+    return new Response('{}', { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    const gdrive = new GoogleDriveService({
+      enabled: true,
+      folderId: 'root_id',
+      serviceAccount: {
+        client_email: 'bot@test.iam.gserviceaccount.com',
+        private_key: privateKey,
+        token_uri: 'https://mock.local/oauth/token',
+      },
+    });
+
+    await gdrive.uploadFile({
+      localFilePath: dummyFile,
+      fileName: 'instagram_post.mp4',
+      fileSize: 5,
+      mimeType: 'video/mp4',
+      platform: 'INSTAGRAM',
+      username: 'ig_creator',
+      eventType: 'post',
+      title: 'IG Video',
+      sourceUrl: 'https://www.instagram.com/p/123/',
+    });
+
+    assert.deepEqual(
+      createdFolders.map((f) => [f.name, f.parents?.[0]]),
+      [
+        ['instagram', 'root_id'],
+        ['ig_creator', 'folder_instagram'],
+        ['posts', 'folder_ig_creator'],
+      ]
+    );
+    assert.ok(uploadedMetadatas[0]?.description?.startsWith('[INSTAGRAM] IG Video'));
+    assert.equal(uploadedMetadatas[0]?.parents?.[0], 'folder_posts');
+
+    // TikTok preserves <Root>/<username>/<posts>
+    createdFolders.length = 0;
+    await gdrive.uploadFile({
+      localFilePath: dummyFile,
+      fileName: 'tt_post.mp4',
+      fileSize: 5,
+      mimeType: 'video/mp4',
+      platform: 'TIKTOK',
+      username: 'tt_creator',
+      eventType: 'post',
+      title: 'TT Video',
+    });
+    assert.deepEqual(
+      createdFolders.map((f) => [f.name, f.parents?.[0]]),
+      [
+        ['tt_creator', 'root_id'],
+        ['posts', 'folder_tt_creator'],
+      ]
+    );
+    assert.ok(uploadedMetadatas[1]?.description?.startsWith('[TIKTOK] TT Video'));
+  } finally {
+    globalThis.fetch = origFetch;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

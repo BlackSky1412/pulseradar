@@ -16,9 +16,12 @@ import {
   type KeywordRuleItem,
   type LiveTargetScanStatus,
   type SocialPlatformKey,
+  type TargetProfileMeta,
   type TargetStreamMeta,
   PLATFORM_BRAND_NAMES,
+  extractTargetUsername,
   formatTimestamp,
+  getTargetProfileKey,
   isLiveUserTarget,
   resolvePlatformProfileUrl,
 } from '../utils/scannerEngine';
@@ -33,6 +36,7 @@ export interface WatchlistSectionProps {
   targets: WatchlistTargetEntry[];
   liveStatusMap: Record<string, LiveTargetScanStatus>;
   targetStreamMetaMap: Record<string, TargetStreamMeta>;
+  targetProfiles?: Record<string, TargetProfileMeta>;
   hasPlatformCookie: boolean;
   isScanning: boolean;
   scanningTargetKey: string | null;
@@ -56,6 +60,7 @@ export function WatchlistSection({
   targets,
   liveStatusMap,
   targetStreamMetaMap,
+  targetProfiles,
   hasPlatformCookie,
   isScanning,
   scanningTargetKey,
@@ -90,6 +95,14 @@ export function WatchlistSection({
           const isLiveUser = isLiveUserTarget(target);
           const isRowScanning = scanningTargetKey === targetKey;
           const meta = targetStreamMetaMap[targetKey] || DEFAULT_STREAM_META;
+          const profileKey = getTargetProfileKey(selectedPlatform, target);
+          const profile = profileKey ? targetProfiles?.[profileKey] : undefined;
+          const extractedName = extractTargetUsername(target, selectedPlatform);
+          const profileHref = resolvePlatformProfileUrl(target, selectedPlatform);
+          const displayNickname =
+            profile?.nickname && profile.nickname.trim() && profile.nickname.trim() !== extractedName
+              ? profile.nickname.trim()
+              : null;
           const targetKindLabel = target.startsWith('http')
             ? 'URL'
             : isLiveUser
@@ -106,25 +119,34 @@ export function WatchlistSection({
                 <div className="flex items-start gap-3 min-w-0 flex-1">
                   <UserAvatar
                     target={target}
+                    nickname={profile?.nickname}
+                    avatarUrl={profile?.avatarUrl}
                     platform={selectedPlatform}
                     isLive={liveInfo?.status === 'LIVE'}
                     size="md"
                   />
                   <div className="min-w-0 flex-1 space-y-1.5">
+                    {displayNickname && (
+                      <div className="text-xs font-semibold text-slate-200 break-words">
+                        {displayNickname}
+                      </div>
+                    )}
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-mono font-bold text-slate-100 text-sm break-all leading-snug">
                         {target}
                       </span>
-                      <a
-                        href={resolvePlatformProfileUrl(target, selectedPlatform)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center p-1 rounded-md text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
-                        title={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
-                        aria-label={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
+                      {profileHref && (
+                        <a
+                          href={profileHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors shrink-0"
+                          title={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
+                          aria-label={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      )}
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span
@@ -357,6 +379,14 @@ export function WatchlistSection({
                 const isLiveUser = isLiveUserTarget(target);
                 const isRowScanning = scanningTargetKey === targetKey;
                 const meta = targetStreamMetaMap[targetKey] || DEFAULT_STREAM_META;
+                const profileKey = getTargetProfileKey(selectedPlatform, target);
+                const profile = profileKey ? targetProfiles?.[profileKey] : undefined;
+                const extractedName = extractTargetUsername(target, selectedPlatform);
+                const profileHref = resolvePlatformProfileUrl(target, selectedPlatform);
+                const displayNickname =
+                  profile?.nickname && profile.nickname.trim() && profile.nickname.trim() !== extractedName
+                    ? profile.nickname.trim()
+                    : null;
 
                 return (
                   <tr key={targetKey} className="hover:bg-slate-900/60 transition-colors">
@@ -365,25 +395,34 @@ export function WatchlistSection({
                       <div className="flex items-center gap-3">
                         <UserAvatar
                           target={target}
+                          nickname={profile?.nickname}
+                          avatarUrl={profile?.avatarUrl}
                           platform={selectedPlatform}
                           isLive={liveInfo?.status === 'LIVE'}
                           size="md"
                         />
                         <div className="min-w-0 flex flex-col justify-center">
                           <div className="flex items-center gap-1.5 flex-wrap">
+                            {displayNickname && (
+                              <span className="text-slate-200 font-semibold truncate max-w-[160px] text-xs">
+                                {displayNickname}
+                              </span>
+                            )}
                             <span className="font-mono font-bold text-slate-100 truncate max-w-[200px] text-xs">
                               {target}
                             </span>
-                            <a
-                              href={resolvePlatformProfileUrl(target, selectedPlatform)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center justify-center p-1 rounded-md text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
-                              title={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
-                              aria-label={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                            </a>
+                            {profileHref && (
+                              <a
+                                href={profileHref}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center justify-center p-1 rounded-md text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
+                                title={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
+                                aria-label={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
+                            )}
                             {meta.warmup && (
                               <InfoPopover
                                 placement="inline"

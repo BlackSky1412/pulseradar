@@ -47,6 +47,8 @@ import {
   Layers,
   ShieldCheck,
   Info,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
 import {
   auth,
@@ -66,7 +68,9 @@ import {
   type ActivityEventType,
   type LiveTargetScanStatus,
   type SocialPlatformKey,
+  type TargetProfileMeta,
   type TargetStreamMeta,
+  type UserValidationResult,
   SOCIAL_KEY_TO_PLATFORM,
   PLATFORM_TO_SOCIAL_KEY,
   PLATFORM_BRAND_NAMES,
@@ -85,6 +89,8 @@ import {
   normalizeMultiPlatformSettings,
   formatTimestamp,
   resolvePlatformProfileUrl,
+  extractTargetUsername,
+  getTargetProfileKey,
 } from './utils/scannerEngine';
 import { RuleModal } from './components/RuleModal';
 import { WebhookModal } from './components/WebhookModal';
@@ -317,6 +323,7 @@ export default function App() {
   const [sandboxReceipts, setSandboxReceipts] = useState<SandboxReceiptItem[]>([]);
   const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
   const lastSyncedWorkspaceJsonRef = useRef<string | null>(null);
+  const lastSyncedPartialWorkspaceJsonRef = useRef<string | null>(null);
   const [androidStatus, setAndroidStatus] = useState<AndroidRuntimeStatus | null>(null);
   const [watcherStatus, setWatcherStatus] = useState<WatcherStatusData | null>(null);
   const [storageStatus, setStorageStatus] = useState<{
@@ -336,8 +343,34 @@ export default function App() {
     return {};
   });
 
+  // Per-target verified profile metadata (id, nickname, avatarUrl, profileUrl, status)
+  const [targetProfiles, setTargetProfiles] = useState<Record<string, TargetProfileMeta>>(() => {
+    try {
+      const raw = localStorage.getItem('pulseradar_target_profiles_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, TargetProfileMeta>;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return {};
+  });
+
   // Inline add target state per platform
   const [inlineInputs, setInlineInputs] = useState<Record<string, string>>({});
+  const [inlineValidating, setInlineValidating] = useState(false);
+  const [inlineError, setInlineError] = useState<string | null>(null);
+  const [inlineBlockedFallback, setInlineBlockedFallback] = useState<{
+    rule: KeywordRuleItem;
+    targetRuleId: string;
+    platformKey: SocialPlatformKey;
+    targets: string[];
+    profileUpdates: Record<string, TargetProfileMeta>;
+    reason: string;
+  } | null>(null);
   const [inlineTrackLive, setInlineTrackLive] = useState(true);
   const [inlineTrackPost, setInlineTrackPost] = useState(true);
   const [inlineTrackStory, setInlineTrackStory] = useState(true);
@@ -427,6 +460,8 @@ export default function App() {
         : undefined);
     if (p) {
       setSelectedPlatform(p);
+      setInlineError(null);
+      setInlineBlockedFallback(null);
     }
     if (tab === 'activity') {
       setLogScope('all');
@@ -473,11 +508,23 @@ export default function App() {
                 }
               : scannerSettings;
 
+          const nextTargetProfiles: Record<string, TargetProfileMeta> =
+            st.targetProfiles &&
+            typeof st.targetProfiles === 'object' &&
+            !Array.isArray(st.targetProfiles)
+              ? (st.targetProfiles as Record<string, TargetProfileMeta>)
+              : targetProfiles;
+
           lastSyncedWorkspaceJsonRef.current = JSON.stringify({
             rules: nextRules,
             servers: nextServers,
             alerts: nextAlerts.slice(0, 100),
             scannerSettings: nextScannerSettings,
+            targetProfiles: nextTargetProfiles,
+          });
+          lastSyncedPartialWorkspaceJsonRef.current = JSON.stringify({
+            scannerSettings: nextScannerSettings,
+            targetProfiles: nextTargetProfiles,
           });
 
           setRules(nextRules);
@@ -489,6 +536,21 @@ export default function App() {
           }
           if (st.scannerSettings && typeof st.scannerSettings === 'object') {
             setScannerSettings(nextScannerSettings);
+          }
+          if (
+            st.targetProfiles &&
+            typeof st.targetProfiles === 'object' &&
+            !Array.isArray(st.targetProfiles)
+          ) {
+            setTargetProfiles(nextTargetProfiles);
+            try {
+              localStorage.setItem(
+                'pulseradar_target_profiles_v1',
+                JSON.stringify(nextTargetProfiles)
+              );
+            } catch {
+              // ignore
+            }
           }
         }
         if (!cancelled) setWorkspaceHydrated(true);
@@ -504,17 +566,45 @@ export default function App() {
 
   // Persist local state to localStorage + backend workspace-state file
   useEffect(() => {
-    if (currentUser || !workspaceHydrated) return;
+    if (!workspaceHydrated) return;
     try {
-      localStorage.setItem('pulseradar_local_rules_v2', JSON.stringify(rules));
-      localStorage.setItem('pulseradar_local_servers_v2', JSON.stringify(servers));
-      localStorage.setItem('pulseradar_local_alerts_v2', JSON.stringify(alerts.slice(0, 100)));
       localStorage.setItem(
         'pulseradar_live_scanner_settings_v1',
         JSON.stringify(scannerSettings)
       );
+      localStorage.setItem('pulseradar_target_profiles_v1', JSON.stringify(targetProfiles));
+      if (!currentUser) {
+        localStorage.setItem('pulseradar_local_rules_v2', JSON.stringify(rules));
+        localStorage.setItem('pulseradar_local_servers_v2', JSON.stringify(servers));
+        localStorage.setItem('pulseradar_local_alerts_v2', JSON.stringify(alerts.slice(0, 100)));
+      }
     } catch {
       // ignore
+    }
+
+    if (currentUser) {
+      const partialJson = JSON.stringify({
+        scannerSettings,
+        targetProfiles,
+      });
+      if (partialJson === lastSyncedPartialWorkspaceJsonRef.current) return;
+
+      const timer = setTimeout(async () => {
+        try {
+          const res = await fetch('/api/workspace-state', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: partialJson,
+          });
+          if (res.ok) {
+            lastSyncedPartialWorkspaceJsonRef.current = partialJson;
+          }
+        } catch {
+          // ignore network error
+        }
+      }, 400);
+
+      return () => clearTimeout(timer);
     }
 
     const payloadJson = JSON.stringify({
@@ -522,6 +612,7 @@ export default function App() {
       servers,
       alerts: alerts.slice(0, 100),
       scannerSettings,
+      targetProfiles,
     });
     if (payloadJson === lastSyncedWorkspaceJsonRef.current) return;
 
@@ -541,7 +632,7 @@ export default function App() {
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [rules, servers, alerts, scannerSettings, currentUser, workspaceHydrated]);
+  }, [rules, servers, alerts, scannerSettings, targetProfiles, currentUser, workspaceHydrated]);
 
   // Firebase auth state
   useEffect(() => {
@@ -1062,39 +1153,43 @@ export default function App() {
     }
   };
 
-  // Inline add a @username or URL to a platform's rule
-  const handleInlineAddTarget = async (rule: KeywordRuleItem) => {
-    const rawVal = (inlineInputs[rule.id] || '').trim();
-    if (!rawVal) return;
+  // Commit validated or explicitly bypassed targets into rule + targetStreamMetaMap + targetProfiles
+  const commitInlineTargets = async (params: {
+    rule: KeywordRuleItem;
+    targetRuleId: string;
+    platformKey: SocialPlatformKey;
+    items: string[];
+    profileUpdates: Record<string, TargetProfileMeta>;
+  }) => {
+    const { rule, targetRuleId, platformKey, items, profileUpdates } = params;
+    if (items.length === 0) return;
 
-    const platformKey = selectedPlatform;
     const targetPlatform = SOCIAL_KEY_TO_PLATFORM[platformKey];
     const defaultDomain = SOURCE_DEFAULT_DOMAINS[targetPlatform];
-
-    // Check if the passed rule actually belongs to the selected platform and exists in rules
-    const ruleExists = rules.some(
-      r => r.id === rule.id && getPlatformKeyForRule(r) === platformKey
-    );
-    const targetRuleId = ruleExists
-      ? rule.id
-      : rule.id.startsWith(`rule_${platformKey}`)
-      ? rule.id
-      : `rule_${platformKey}_source`;
-
-    const currentTargets = ruleExists ? parseTrackedTargets(rule.keyword) : [];
-    const newItems = rawVal
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean);
-    const merged = Array.from(new Set([...currentTargets, ...newItems]));
+    const currentRule =
+      rules.find(r => r.id === targetRuleId && getPlatformKeyForRule(r) === platformKey) ??
+      rules.find(r => r.id === rule.id && getPlatformKeyForRule(r) === platformKey);
+    const ruleExists = Boolean(currentRule);
+    const activeRule = currentRule ?? rule;
+    const currentTargets = ruleExists ? parseTrackedTargets(activeRule.keyword) : [];
+    const merged = Array.from(new Set([...currentTargets, ...items]));
     const updatedKeywordStr = merged.join(', ').slice(0, 4000);
 
-    setInlineInputs(prev => ({ ...prev, [rule.id]: '' }));
+    if (Object.keys(profileUpdates).length > 0) {
+      setTargetProfiles(prev => {
+        const next = { ...prev, ...profileUpdates };
+        try {
+          localStorage.setItem('pulseradar_target_profiles_v1', JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+    }
 
-    // Store metadata for added targets
     setTargetStreamMetaMap(prev => {
       const next = { ...prev };
-      for (const item of newItems) {
+      for (const item of items) {
         next[`${targetRuleId}::${item}`] = {
           live: inlineTrackLive,
           post: inlineTrackPost,
@@ -1113,12 +1208,176 @@ export default function App() {
     await handleSaveRule({
       id: targetRuleId,
       keyword: updatedKeywordStr,
-      excludedKeywords: ruleExists ? rule.excludedKeywords : `${defaultDomain} |`,
-      matchType: ruleExists ? rule.matchType : 'contains',
+      excludedKeywords: ruleExists ? activeRule.excludedKeywords : `${defaultDomain} |`,
+      matchType: ruleExists ? activeRule.matchType : 'contains',
       platforms: [targetPlatform],
-      webhookServerId: ruleExists ? rule.webhookServerId : (servers[0]?.id || 'srv_sandbox_local'),
-      enabled: ruleExists ? rule.enabled : true,
+      webhookServerId: ruleExists ? activeRule.webhookServerId : (servers[0]?.id || 'srv_sandbox_local'),
+      enabled: ruleExists ? activeRule.enabled : true,
     });
+  };
+
+  // Inline add a @username or URL to a platform's rule (with /api/user/validate)
+  const handleInlineAddTarget = async (rule: KeywordRuleItem) => {
+    const rawVal = (inlineInputs[rule.id] || '').trim();
+    if (!rawVal || inlineValidating) return;
+
+    setInlineError(null);
+    setInlineBlockedFallback(null);
+
+    const platformKey = selectedPlatform;
+    const targetPlatform = SOCIAL_KEY_TO_PLATFORM[platformKey];
+    const platformCookie = scannerSettings.cookies?.[platformKey]?.trim();
+
+    // Check if the passed rule actually belongs to the selected platform and exists in rules
+    const ruleExists = rules.some(
+      r => r.id === rule.id && getPlatformKeyForRule(r) === platformKey
+    );
+    const targetRuleId = ruleExists
+      ? rule.id
+      : rule.id.startsWith(`rule_${platformKey}`)
+      ? rule.id
+      : `rule_${platformKey}_source`;
+
+    const parts = rawVal
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    setInlineValidating(true);
+    const validTargets: string[] = [];
+    const profileUpdates: Record<string, TargetProfileMeta> = {};
+    const blockedTargets: string[] = [];
+    const blockedProfiles: Record<string, TargetProfileMeta> = {};
+    const blockedReasons: string[] = [];
+    const invalidErrors: string[] = [];
+
+    for (const part of parts) {
+      try {
+        const resp = await fetch('/api/user/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target: part,
+            platform: targetPlatform,
+            ...(platformCookie ? { cookie: platformCookie } : {}),
+          }),
+        });
+        const data = (await resp.json()) as { ok?: boolean; result?: UserValidationResult };
+        const result = data?.result;
+        const canonicalTarget = part.startsWith('http')
+          ? part
+          : part.startsWith('@')
+          ? part
+          : `@${result?.username || part}`;
+        const profileKey = getTargetProfileKey(platformKey, result?.username || part);
+
+        if (data?.ok && result?.valid) {
+          validTargets.push(canonicalTarget);
+          if (profileKey) {
+            profileUpdates[profileKey] = {
+              ...(result.id ? { id: result.id } : {}),
+              ...(result.nickname ? { nickname: result.nickname } : {}),
+              ...(result.avatarUrl ? { avatarUrl: result.avatarUrl } : {}),
+              profileUrl:
+                result.profileUrl || resolvePlatformProfileUrl(canonicalTarget, targetPlatform),
+              status: result.status || 'VALID',
+              ...(result.authMode ? { authMode: result.authMode } : {}),
+              updatedAt: new Date().toISOString(),
+            };
+          }
+        } else if (
+          result &&
+          (result.status === 'AUTH_REQUIRED' ||
+            result.status === 'BLOCKED' ||
+            result.status === 'ERROR') &&
+          isLiveUserTarget(part) &&
+          extractTargetUsername(part, platformKey)
+        ) {
+          blockedTargets.push(canonicalTarget);
+          if (profileKey) {
+            blockedProfiles[profileKey] = {
+              profileUrl:
+                result.profileUrl || resolvePlatformProfileUrl(canonicalTarget, targetPlatform),
+              status: result.status,
+              ...(result.authMode ? { authMode: result.authMode } : {}),
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          blockedReasons.push(
+            result.error ||
+              `Nền tảng ${PLATFORM_BRAND_NAMES[platformKey]} chặn truy cập ẩn danh hoặc yêu cầu Cookie.`
+          );
+        } else {
+          invalidErrors.push(
+            result?.error ||
+              `Tài khoản "${part}" không tồn tại hoặc không hợp lệ trên ${PLATFORM_BRAND_NAMES[platformKey]}.`
+          );
+        }
+      } catch {
+        const extracted = extractTargetUsername(part, platformKey);
+        if (isLiveUserTarget(part) && extracted) {
+          const canonicalTarget =
+            part.startsWith('http') || part.startsWith('@') ? part : `@${extracted}`;
+          const profileKey = getTargetProfileKey(platformKey, extracted);
+          blockedTargets.push(canonicalTarget);
+          if (profileKey) {
+            blockedProfiles[profileKey] = {
+              profileUrl: resolvePlatformProfileUrl(canonicalTarget, targetPlatform),
+              status: 'ERROR',
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          blockedReasons.push(`Không thể kết nối máy chủ để xác thực "${part}".`);
+        } else {
+          invalidErrors.push(`Tên tài khoản "${part}" không đúng định dạng.`);
+        }
+      }
+    }
+
+    setInlineValidating(false);
+
+    if (validTargets.length > 0) {
+      await commitInlineTargets({
+        rule,
+        targetRuleId,
+        platformKey,
+        items: validTargets,
+        profileUpdates,
+      });
+    }
+
+    if (blockedTargets.length > 0) {
+      setInlineBlockedFallback({
+        rule,
+        targetRuleId,
+        platformKey,
+        targets: blockedTargets,
+        profileUpdates: blockedProfiles,
+        reason: blockedReasons.join(' | '),
+      });
+    }
+
+    if (invalidErrors.length > 0) {
+      setInlineError(`❌ Không thể thêm: ${invalidErrors.join(' | ')}`);
+    }
+
+    if (invalidErrors.length === 0 && blockedTargets.length === 0) {
+      setInlineInputs(prev => ({ ...prev, [rule.id]: '' }));
+    }
+  };
+
+  const handleConfirmInlineBlocked = async () => {
+    if (!inlineBlockedFallback) return;
+    const pending = inlineBlockedFallback;
+    setInlineBlockedFallback(null);
+    await commitInlineTargets({
+      rule: pending.rule,
+      targetRuleId: pending.targetRuleId,
+      platformKey: pending.platformKey,
+      items: pending.targets,
+      profileUpdates: pending.profileUpdates,
+    });
+    setInlineInputs(prev => ({ ...prev, [pending.rule.id]: '' }));
   };
 
   // Inline remove a target from a rule
@@ -2266,24 +2525,68 @@ export default function App() {
                   <input
                     type="text"
                     value={inlineInputs[activePlatformRule.id] || ''}
-                    onChange={e =>
+                    onChange={e => {
                       setInlineInputs(prev => ({
                         ...prev,
                         [activePlatformRule.id]: e.target.value,
-                      }))
-                    }
+                      }));
+                      if (inlineError) setInlineError(null);
+                      if (inlineBlockedFallback) setInlineBlockedFallback(null);
+                    }}
                     placeholder={`Nhập @username hoặc URL kênh ${PLATFORM_BRAND_NAMES[selectedPlatform]} (VD: @mixigaming, https://${selectedPlatform}.com/...)...`}
                     aria-label={`Thêm mục tiêu theo dõi vào ${PLATFORM_BRAND_NAMES[selectedPlatform]}`}
                     className="w-full sm:w-auto flex-1 min-h-[44px] px-3.5 py-2 text-sm bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-400"
                   />
                   <button
                     type="submit"
-                    className="w-full sm:w-auto min-h-[44px] inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors whitespace-nowrap shrink-0 shadow-sm"
+                    disabled={inlineValidating}
+                    className="w-full sm:w-auto min-h-[44px] inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-xl transition-colors whitespace-nowrap shrink-0 shadow-sm"
                   >
-                    <Plus className="w-4 h-4" />
-                    Thêm kênh
+                    {inlineValidating ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Đang xác thực...
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-4 h-4" />
+                        Thêm kênh
+                      </>
+                    )}
                   </button>
                 </div>
+
+                {inlineError && (
+                  <div className="p-2.5 bg-rose-950/60 border border-rose-800/80 rounded-xl flex items-center gap-2 text-xs text-rose-300">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{inlineError}</span>
+                  </div>
+                )}
+
+                {inlineBlockedFallback && inlineBlockedFallback.platformKey === selectedPlatform && (
+                  <div className="p-3 bg-amber-950/50 border border-amber-700/70 rounded-xl space-y-2 text-xs text-amber-200">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                      <div className="space-y-1 min-w-0">
+                        <p className="font-semibold text-amber-100">
+                          Không thể xác thực tự động ({inlineBlockedFallback.targets.join(', ')})
+                        </p>
+                        <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                          {inlineBlockedFallback.reason}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={handleConfirmInlineBlocked}
+                        className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-amber-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors"
+                      >
+                        Thêm dù chưa xác thực (chỉ lưu cú pháp)
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Multi-stream subscription toggles and warmup checkbox for new target */}
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/60 text-xs">
@@ -2356,6 +2659,8 @@ export default function App() {
                       .map(({ rule, target }) => {
                         const targetKey = `${rule.id}::${target}`;
                         const live = liveStatusMap[targetKey];
+                        const profileKey = getTargetProfileKey(selectedPlatform, target);
+                        const profile = profileKey ? targetProfiles[profileKey] : undefined;
                         return (
                           <div
                             key={`highlight_${targetKey}`}
@@ -2363,6 +2668,8 @@ export default function App() {
                           >
                             <UserAvatar
                               target={target}
+                              nickname={profile?.nickname}
+                              avatarUrl={profile?.avatarUrl}
                               platform={selectedPlatform}
                               isLive={true}
                               size="sm"
@@ -2376,7 +2683,7 @@ export default function App() {
                                   href={resolvePlatformProfileUrl(target, selectedPlatform)}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center justify-center p-0.5 rounded text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
+                                  className="min-h-[44px] min-w-[44px] md:min-h-[24px] md:min-w-[24px] inline-flex items-center justify-center rounded text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
                                   title={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
                                   aria-label={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
                                 >
@@ -2415,6 +2722,7 @@ export default function App() {
                 targets={activePlatformTargets}
                 liveStatusMap={liveStatusMap}
                 targetStreamMetaMap={targetStreamMetaMap}
+                targetProfiles={targetProfiles}
                 hasPlatformCookie={hasPlatformCookie}
                 isScanning={isScanning}
                 scanningTargetKey={scanningTargetKey}
@@ -2950,6 +3258,19 @@ export default function App() {
         editingRule={editingRule}
         servers={servers}
         defaultPlatform={SOCIAL_KEY_TO_PLATFORM[selectedPlatform]}
+        cookies={scannerSettings.cookies}
+        targetProfiles={targetProfiles}
+        onProfileValidated={updates =>
+          setTargetProfiles(prev => {
+            const next = { ...prev, ...updates };
+            try {
+              localStorage.setItem('pulseradar_target_profiles_v1', JSON.stringify(next));
+            } catch {
+              // ignore
+            }
+            return next;
+          })
+        }
       />
 
       <WebhookModal

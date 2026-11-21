@@ -203,12 +203,61 @@ export const PLATFORM_LABELS: Record<SocialPlatform, string> = {
 
 export type SocialPlatformKey = 'tiktok' | 'instagram' | 'facebook' | 'x';
 
+export type UserValidationStatus =
+  | 'VALID'
+  | 'INVALID_FORMAT'
+  | 'NOT_FOUND'
+  | 'AUTH_REQUIRED'
+  | 'BLOCKED'
+  | 'ERROR';
+
+export interface UserValidationResult {
+  valid: boolean;
+  status?: UserValidationStatus;
+  authMode?: 'anonymous' | 'cookie';
+  httpStatus?: number;
+  username: string;
+  platform: string;
+  error?: string;
+  id?: string;
+  nickname?: string;
+  avatarUrl?: string;
+  profileUrl: string;
+}
+
+export interface TargetProfileMeta {
+  id?: string;
+  nickname?: string;
+  avatarUrl?: string;
+  profileUrl: string;
+  status?: UserValidationStatus | string;
+  authMode?: 'anonymous' | 'cookie';
+  updatedAt: string;
+}
+
 export const SOCIAL_KEY_TO_PLATFORM: Record<SocialPlatformKey, SocialPlatform> = {
   tiktok: 'reddit',
   instagram: 'hackernews',
   facebook: 'github',
   x: 'bluesky',
 };
+
+export const SOCIAL_KEY_TO_LIVE_PLATFORM: Record<SocialPlatformKey, LivePlatform> = {
+  tiktok: 'TIKTOK',
+  instagram: 'INSTAGRAM',
+  facebook: 'FACEBOOK',
+  x: 'X',
+};
+
+export function toLivePlatform(
+  platform: SocialPlatform | SocialPlatformKey | LivePlatform | string
+): LivePlatform {
+  const norm = String(platform || '').trim().toLowerCase();
+  if (norm === 'instagram' || norm === 'hackernews') return 'INSTAGRAM';
+  if (norm === 'facebook' || norm === 'github') return 'FACEBOOK';
+  if (norm === 'x' || norm === 'twitter' || norm === 'bluesky') return 'X';
+  return 'TIKTOK';
+}
 
 export const PLATFORM_TO_SOCIAL_KEY: Record<SocialPlatform, SocialPlatformKey> = {
   reddit: 'tiktok',
@@ -339,6 +388,167 @@ export function resolveLivePlatformForTarget(
   return SOCIAL_TO_LIVE_PLATFORM[platform] || 'TIKTOK';
 }
 
+const TIKTOK_RESERVED_ROUTES = new Set([
+  'explore',
+  'following',
+  'friends',
+  'live',
+  'messages',
+  'upload',
+  'search',
+  'tag',
+  'music',
+  'foryou',
+  'discover',
+  'login',
+  'signup',
+]);
+
+const IG_RESERVED_ROUTES = new Set([
+  'live',
+  'stories',
+  'reels',
+  'reel',
+  'p',
+  'tv',
+  'explore',
+  'accounts',
+  'direct',
+  'about',
+  'legal',
+  'developer',
+  'directory',
+]);
+
+const FB_RESERVED_ROUTES = new Set([
+  'watch',
+  'share',
+  'profile.php',
+  'story.php',
+  'photo.php',
+  'permalink.php',
+  'live',
+  'groups',
+  'events',
+  'pages',
+  'marketplace',
+  'gaming',
+  'reel',
+  'reels',
+  'videos',
+  'login',
+  'recover',
+  'help',
+  'settings',
+  'privacy',
+  'policies',
+  'stories',
+  'people',
+]);
+
+const X_RESERVED_ROUTES = new Set([
+  'i',
+  'explore',
+  'home',
+  'search',
+  'notifications',
+  'messages',
+  'settings',
+  'compose',
+  'intent',
+  'hashtag',
+  'login',
+  'signup',
+  'tos',
+  'privacy',
+]);
+
+/**
+ * Extracts a normalized username/ID from a handle or social profile URL.
+ * Returns '' for reserved non-profile routes or unrecognized URLs.
+ */
+export function extractTargetUsername(
+  input: string,
+  _platform?: SocialPlatform | SocialPlatformKey | LivePlatform | string
+): string {
+  const trimmed = typeof input === 'string' ? input.trim() : '';
+  if (!trimmed) return '';
+  const lower = trimmed.toLowerCase();
+
+  if (lower.includes('tiktok.com')) {
+    const atMatch = trimmed.match(/tiktok\.com\/@([a-zA-Z0-9_.]+)/i);
+    if (atMatch?.[1]) return atMatch[1];
+    const plainMatch = trimmed.match(/tiktok\.com\/([a-zA-Z0-9_.]+)/i);
+    const candidate = plainMatch?.[1] || '';
+    if (candidate && !TIKTOK_RESERVED_ROUTES.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+    return '';
+  }
+
+  if (lower.includes('instagram.com') || lower.includes('instagr.am')) {
+    const noQuery = trimmed.split(/[?#]/)[0] || trimmed;
+    const match = noQuery.match(/(?:instagram\.com|instagr\.am)\/@?([a-zA-Z0-9_.]+)/i);
+    const candidate = match?.[1] || '';
+    if (candidate && !IG_RESERVED_ROUTES.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+    return '';
+  }
+
+  if (lower.includes('facebook.com') || lower.includes('fb.com') || lower.includes('fb.watch')) {
+    if (lower.includes('fb.watch')) {
+      return '';
+    }
+    const idMatch = trimmed.match(/profile\.php\?(?:[^#]*&)?id=(\d+)/i);
+    if (idMatch?.[1]) {
+      return idMatch[1];
+    }
+    const peopleMatch = trimmed.match(/(?:facebook\.com|fb\.com)\/people\/[^/?#]+\/(\d+)/i);
+    if (peopleMatch?.[1]) {
+      return peopleMatch[1];
+    }
+    const pathMatch = trimmed.match(/(?:facebook\.com|fb\.com)\/@?([^/?#]+)/i);
+    const candidate = (pathMatch?.[1] || '').replace(/^@+/, '').trim();
+    if (candidate && !FB_RESERVED_ROUTES.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+    return '';
+  }
+
+  if (lower.includes('x.com') || lower.includes('twitter.com')) {
+    const statusMatch = trimmed.match(/(?:x|twitter)\.com\/@?([a-zA-Z0-9_]+)\/status\//i);
+    if (statusMatch?.[1] && !X_RESERVED_ROUTES.has(statusMatch[1].toLowerCase())) {
+      return statusMatch[1];
+    }
+    const profileMatch = trimmed.match(/(?:x|twitter)\.com\/@?([a-zA-Z0-9_]+)/i);
+    const candidate = profileMatch?.[1] || '';
+    if (candidate && !X_RESERVED_ROUTES.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+    return '';
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    return '';
+  }
+
+  return trimmed.replace(/^@+/, '').split(/[/?#]/)[0]?.trim() || '';
+}
+
+/**
+ * Computes the canonical profile metadata map key `${LivePlatform}::${usernameLower}`.
+ */
+export function getTargetProfileKey(
+  platform: SocialPlatform | SocialPlatformKey | LivePlatform | string,
+  target: string
+): string {
+  const livePlatform = toLivePlatform(platform);
+  const extracted = extractTargetUsername(target, platform).toLowerCase();
+  if (!extracted) return '';
+  return `${livePlatform}::${extracted}`;
+}
+
 /**
  * Resolves the direct external profile/channel URL for a given target and platform.
  */
@@ -347,10 +557,14 @@ export function resolvePlatformProfileUrl(
   platform: SocialPlatform | string = 'reddit'
 ): string {
   const clean = rawTarget.trim();
+  if (!clean) return '';
   if (clean.startsWith('http://') || clean.startsWith('https://')) {
     return clean;
   }
-  const cleanUsername = clean.replace(/^@+/, '').split(/[/?#]/)[0].trim();
+  const cleanUsername = extractTargetUsername(clean, platform);
+  if (!cleanUsername) {
+    return '';
+  }
   const p = String(platform).toLowerCase();
 
   if (p === 'reddit' || p === 'tiktok') {
@@ -360,6 +574,9 @@ export function resolvePlatformProfileUrl(
     return `https://www.instagram.com/${cleanUsername}/`;
   }
   if (p === 'github' || p === 'facebook') {
+    if (/^\d+$/.test(cleanUsername)) {
+      return `https://www.facebook.com/profile.php?id=${cleanUsername}`;
+    }
     return `https://www.facebook.com/${cleanUsername}`;
   }
   if (p === 'bluesky' || p === 'x' || p === 'twitter') {

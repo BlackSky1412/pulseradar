@@ -1,13 +1,18 @@
 ﻿import fs from 'node:fs';
 import path from 'node:path';
-import type {
-  AlertDetectionItem,
-  KeywordRuleItem,
-  LivePlatform,
-  PlatformCookies,
-  WebhookServerItem,
+import {
+  resolvePlatformProfileUrl,
+  type AlertDetectionItem,
+  type KeywordRuleItem,
+  type LivePlatform,
+  type PlatformCookies,
+  type TargetProfileMeta,
+  type WebhookServerItem,
 } from '../src/utils/scannerEngine';
+import { canonicalizeUsername, makeCanonicalKey, parseStrictPlatform } from './reconcile';
 import type { PendingDeviceNotification } from './watchers/types';
+
+export type { TargetProfileMeta };
 
 export interface ScannerSettingsState {
   cookies: Required<PlatformCookies>;
@@ -20,6 +25,7 @@ export interface WorkspaceState {
   servers: WebhookServerItem[];
   alerts: AlertDetectionItem[];
   scannerSettings: ScannerSettingsState;
+  targetProfiles?: Record<string, TargetProfileMeta>;
   updatedAt: string;
 }
 
@@ -152,6 +158,7 @@ export function createDefaultWorkspaceState(): WorkspaceState {
       pollIntervalSeconds: 30,
       deduplicateLive: true,
     },
+    targetProfiles: {},
     updatedAt: new Date(0).toISOString(),
   };
 }
@@ -204,6 +211,83 @@ function normalizeScannerSettings(
   };
 }
 
+export function normalizeTargetProfiles(
+  incoming: unknown,
+  fallback?: Record<string, TargetProfileMeta>
+): Record<string, TargetProfileMeta> {
+  if (incoming === undefined) {
+    return fallback ? normalizeTargetProfiles(fallback) : {};
+  }
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+    return {};
+  }
+
+  const out: Record<string, TargetProfileMeta> = {};
+  for (const [rawKey, rawVal] of Object.entries(incoming as Record<string, unknown>)) {
+    if (!rawVal || typeof rawVal !== 'object' || Array.isArray(rawVal)) {
+      continue;
+    }
+    const sepIdx = rawKey.indexOf('::');
+    if (sepIdx <= 0) continue;
+    const rawPlatform = rawKey.slice(0, sepIdx);
+    const rawUsername = rawKey.slice(sepIdx + 2);
+    const platform = parseStrictPlatform(rawPlatform);
+    if (!platform) continue;
+    const canonicalUsername = canonicalizeUsername(rawUsername, platform);
+    if (!canonicalUsername) continue;
+
+    const canonicalKey = makeCanonicalKey(platform, canonicalUsername);
+    if (!out[canonicalKey] && Object.keys(out).length >= 1000) {
+      continue;
+    }
+
+    const v = rawVal as Record<string, unknown>;
+    const rawProfileUrl = typeof v.profileUrl === 'string' ? v.profileUrl.trim() : '';
+    const profileUrl =
+      /^https?:\/\//i.test(rawProfileUrl) && rawProfileUrl.length <= 2000
+        ? rawProfileUrl
+        : resolvePlatformProfileUrl(canonicalUsername, platform);
+
+    const rawUpdatedAt = typeof v.updatedAt === 'string' ? v.updatedAt.trim() : '';
+    const updatedAt = Number.isFinite(Date.parse(rawUpdatedAt))
+      ? rawUpdatedAt
+      : new Date(0).toISOString();
+
+    const entry: TargetProfileMeta = {
+      profileUrl,
+      updatedAt,
+    };
+
+    if (typeof v.id === 'string') {
+      const id = v.id.trim();
+      if (id && id.length <= 128) entry.id = id;
+    }
+    if (typeof v.nickname === 'string') {
+      const nickname = v.nickname.trim();
+      if (nickname && nickname.length <= 200) entry.nickname = nickname;
+    }
+    if (typeof v.avatarUrl === 'string') {
+      const avatarUrl = v.avatarUrl.trim();
+      if (/^https?:\/\//i.test(avatarUrl) && avatarUrl.length <= 2000) {
+        entry.avatarUrl = avatarUrl;
+      }
+    }
+    if (typeof v.status === 'string') {
+      const status = v.status.trim();
+      if (status && status.length <= 40) entry.status = status;
+    }
+    if (v.authMode === 'anonymous' || v.authMode === 'cookie') {
+      entry.authMode = v.authMode;
+    }
+
+    const existing = out[canonicalKey];
+    if (!existing || Date.parse(entry.updatedAt) >= Date.parse(existing.updatedAt)) {
+      out[canonicalKey] = entry;
+    }
+  }
+  return out;
+}
+
 function normalizeWorkspaceState(raw: unknown): WorkspaceState {
   const def = createDefaultWorkspaceState();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -215,6 +299,7 @@ function normalizeWorkspaceState(raw: unknown): WorkspaceState {
     servers: Array.isArray(obj.servers) ? obj.servers : def.servers,
     alerts: Array.isArray(obj.alerts) ? obj.alerts : def.alerts,
     scannerSettings: normalizeScannerSettings(obj.scannerSettings, def.scannerSettings),
+    targetProfiles: normalizeTargetProfiles(obj.targetProfiles),
     updatedAt: typeof obj.updatedAt === 'string' ? obj.updatedAt : def.updatedAt,
   };
 }
@@ -392,6 +477,7 @@ export function createStateStore(dataDir: string): StateStore {
           servers: Array.isArray(partialOrFull.servers) ? partialOrFull.servers : existing.servers,
           alerts: Array.isArray(partialOrFull.alerts) ? partialOrFull.alerts : existing.alerts,
           scannerSettings: normalizeScannerSettings(partialOrFull.scannerSettings, existing.scannerSettings),
+          targetProfiles: normalizeTargetProfiles(partialOrFull.targetProfiles, existing.targetProfiles),
           updatedAt: new Date().toISOString(),
         };
         await atomicWriteJson(workspaceFile, next);
