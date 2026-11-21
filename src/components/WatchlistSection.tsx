@@ -20,6 +20,7 @@ import {
   PLATFORM_BRAND_NAMES,
   formatTimestamp,
   isLiveUserTarget,
+  resolvePlatformProfileUrl,
 } from '../utils/scannerEngine';
 
 export interface WatchlistTargetEntry {
@@ -110,8 +111,20 @@ export function WatchlistSection({
                     size="md"
                   />
                   <div className="min-w-0 flex-1 space-y-1.5">
-                    <div className="font-mono font-bold text-slate-100 text-sm break-all leading-snug">
-                      {target}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-mono font-bold text-slate-100 text-sm break-all leading-snug">
+                        {target}
+                      </span>
+                      <a
+                        href={resolvePlatformProfileUrl(target, selectedPlatform)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center p-1 rounded-md text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
+                        title={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
+                        aria-label={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span
@@ -361,6 +374,16 @@ export function WatchlistSection({
                             <span className="font-mono font-bold text-slate-100 truncate max-w-[200px] text-xs">
                               {target}
                             </span>
+                            <a
+                              href={resolvePlatformProfileUrl(target, selectedPlatform)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center p-1 rounded-md text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
+                              title={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
+                              aria-label={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
                             {meta.warmup && (
                               <InfoPopover
                                 placement="inline"

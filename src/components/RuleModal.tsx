@@ -11,6 +11,8 @@ import {
   Clock,
   Server,
   Layers,
+  ExternalLink,
+  Loader2,
 } from 'lucide-react';
 import {
   type KeywordRuleItem,
@@ -23,6 +25,7 @@ import {
   validateKeywordRuleInput,
   parseTrackedTargets,
   parseSourceMeta,
+  resolvePlatformProfileUrl,
 } from '../utils/scannerEngine';
 
 interface RuleModalProps {
@@ -134,6 +137,7 @@ export function RuleModal({
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
 
   useEffect(() => {
     if (editingRule) {
@@ -180,15 +184,63 @@ export function RuleModal({
 
   if (!isOpen) return null;
 
-  const handleAddTarget = () => {
+  const handleAddTarget = async () => {
     const trimmed = newTargetInput.trim();
-    if (!trimmed) return;
+    if (!trimmed || isValidating) return;
+    setErrorMsg(null);
+
     const parts = trimmed
       .split(',')
       .map(s => s.trim())
       .filter(Boolean);
-    setTargets(prev => Array.from(new Set([...prev, ...parts])));
-    setNewTargetInput('');
+
+    setIsValidating(true);
+    const validToAdd: string[] = [];
+    const invalidErrors: string[] = [];
+
+    for (const part of parts) {
+      try {
+        const resp = await fetch('/api/user/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target: part,
+            platform: selectedPlatform,
+          }),
+        });
+        const data = await resp.json();
+        if (data?.ok && data?.result?.valid) {
+          const canonicalTarget = part.startsWith('http')
+            ? part
+            : part.startsWith('@')
+            ? part
+            : `@${data.result.username || part}`;
+          validToAdd.push(canonicalTarget);
+        } else {
+          invalidErrors.push(
+            data?.result?.error || `Tài khoản "${part}" không tồn tại hoặc không hợp lệ trên ${PLATFORM_LABELS[selectedPlatform]}.`
+          );
+        }
+      } catch (err) {
+        const clean = part.replace(/^@+/, '');
+        if (clean.length >= 2 && !clean.includes(' ')) {
+          validToAdd.push(part.startsWith('http') || part.startsWith('@') ? part : `@${clean}`);
+        } else {
+          invalidErrors.push(`Tên tài khoản "${part}" không đúng định dạng.`);
+        }
+      }
+    }
+
+    setIsValidating(false);
+
+    if (validToAdd.length > 0) {
+      setTargets(prev => Array.from(new Set([...prev, ...validToAdd])));
+      setNewTargetInput('');
+    }
+
+    if (invalidErrors.length > 0) {
+      setErrorMsg(`❌ Không thể thêm: ${invalidErrors.join(' | ')}`);
+    }
   };
 
   const handleRemoveTarget = (targetToRemove: string) => {
@@ -204,16 +256,12 @@ export function RuleModal({
     e.preventDefault();
     setErrorMsg(null);
 
-    const finalTargets = [...targets];
     if (newTargetInput.trim()) {
-      newTargetInput
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
-        .forEach(item => {
-          if (!finalTargets.includes(item)) finalTargets.push(item);
-        });
+      setErrorMsg('Bạn còn tên user chưa bấm "Thêm vào nguồn". Vui lòng bấm Thêm vào nguồn để kiểm tra hợp lệ trước khi lưu!');
+      return;
     }
+
+    const finalTargets = [...targets];
 
     if (!trackLive && !trackPost && !trackStory) {
       setErrorMsg('Vui lòng chọn ít nhất 1 luồng theo dõi (Live, Post, hoặc Story).');
@@ -382,10 +430,20 @@ export function RuleModal({
               <button
                 type="button"
                 onClick={handleAddTarget}
-                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 border border-indigo-500 rounded-xl hover:bg-indigo-500 transition-colors whitespace-nowrap shrink-0"
+                disabled={isValidating}
+                className="min-h-[44px] inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 border border-indigo-500 rounded-xl hover:bg-indigo-500 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
               >
-                <Plus className="w-3.5 h-3.5" />
-                Thêm vào nguồn
+                {isValidating ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Đang xác thực...
+                  </>
+                ) : (
+                  <>
+                    <Plus className="w-3.5 h-3.5" />
+                    Thêm vào nguồn
+                  </>
+                )}
               </button>
             </div>
 
@@ -394,7 +452,7 @@ export function RuleModal({
                 Chưa có mục tiêu nào. Hãy nhập @username hoặc URL kênh ở ô trên rồi nhấn Thêm.
               </div>
             ) : (
-              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl divide-y divide-slate-800/80 max-h-40 overflow-y-auto">
+              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl divide-y divide-slate-800/80 max-h-48 overflow-y-auto">
                 {targets.map(t => {
                   const isUser = t.startsWith('@');
                   return (
@@ -410,6 +468,16 @@ export function RuleModal({
                         >
                           {t}
                         </span>
+                        <a
+                          href={resolvePlatformProfileUrl(t, selectedPlatform)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center justify-center p-1 rounded-md text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
+                          title={`Mở trang ${PLATFORM_LABELS[selectedPlatform]} của ${t}`}
+                          aria-label={`Mở trang ${PLATFORM_LABELS[selectedPlatform]} của ${t}`}
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
                         <span className="text-slate-500 font-sans text-[11px]">
                           · {isUser ? 'Tài khoản User' : 'URL / Từ khóa'}
                         </span>

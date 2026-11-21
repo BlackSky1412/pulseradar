@@ -84,6 +84,7 @@ import {
   isLiveUserTarget,
   normalizeMultiPlatformSettings,
   formatTimestamp,
+  resolvePlatformProfileUrl,
 } from './utils/scannerEngine';
 import { RuleModal } from './components/RuleModal';
 import { WebhookModal } from './components/WebhookModal';
@@ -2367,9 +2368,21 @@ export default function App() {
                               size="sm"
                             />
                             <div className="flex flex-col min-w-0">
-                              <span className="font-mono font-bold text-slate-100 text-xs truncate max-w-[140px]">
-                                {target}
-                              </span>
+                              <div className="flex items-center gap-1">
+                                <span className="font-mono font-bold text-slate-100 text-xs truncate max-w-[140px]">
+                                  {target}
+                                </span>
+                                <a
+                                  href={resolvePlatformProfileUrl(target, selectedPlatform)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center justify-center p-0.5 rounded text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
+                                  title={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
+                                  aria-label={`Mở trang ${PLATFORM_BRAND_NAMES[selectedPlatform]} của ${target}`}
+                                >
+                                  <ExternalLink className="w-3 h-3" />
+                                </a>
+                              </div>
                               <span className="text-[10px] text-rose-300 truncate max-w-[140px]">
                                 {live?.title || 'Đang phát trực tiếp'}
                               </span>

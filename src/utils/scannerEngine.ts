@@ -340,6 +340,35 @@ export function resolveLivePlatformForTarget(
 }
 
 /**
+ * Resolves the direct external profile/channel URL for a given target and platform.
+ */
+export function resolvePlatformProfileUrl(
+  rawTarget: string,
+  platform: SocialPlatform | string = 'reddit'
+): string {
+  const clean = rawTarget.trim();
+  if (clean.startsWith('http://') || clean.startsWith('https://')) {
+    return clean;
+  }
+  const cleanUsername = clean.replace(/^@+/, '').split(/[/?#]/)[0].trim();
+  const p = String(platform).toLowerCase();
+
+  if (p === 'reddit' || p === 'tiktok') {
+    return `https://www.tiktok.com/@${cleanUsername}`;
+  }
+  if (p === 'hackernews' || p === 'instagram') {
+    return `https://www.instagram.com/${cleanUsername}/`;
+  }
+  if (p === 'github' || p === 'facebook') {
+    return `https://www.facebook.com/${cleanUsername}`;
+  }
+  if (p === 'bluesky' || p === 'x' || p === 'twitter') {
+    return `https://x.com/${cleanUsername}`;
+  }
+  return `https://www.tiktok.com/@${cleanUsername}`;
+}
+
+/**
  * Parses `excludedKeywords` which may optionally include a custom source domain prefix `domain.com | neg1,neg2`
  */
 export function parseSourceMeta(

@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "node --import tsx --test src/utils/scannerEngine.test.ts server/liveCheckers/liveCheckers.test.ts firestore.rules.test.ts server/androidIntegration.test.ts server/storage/storage.test.ts",
+    "test": "node --import tsx --test src/utils/scannerEngine.test.ts server/liveCheckers/liveCheckers.test.ts firestore.rules.test.ts server/androidIntegration.test.ts server/storage/storage.test.ts server/userValidator.test.ts",
     "test:e2e": "node --import tsx tests/e2e/run.ts",
     "test:e2e:prod": "node --import tsx tests/e2e/run.ts --tier prod",
     "test:e2e:tier1": "node --import tsx tests/e2e/run.ts --tier 1",

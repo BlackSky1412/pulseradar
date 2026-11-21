@@ -58,6 +58,7 @@ import {
   type AndroidClientOptions,
 } from './server/androidClient';
 import { createAutoScanner, type AutoScanner } from './server/autoScanner';
+import { validateTargetUser } from './server/userValidator';
 import {
   canonicalizeUsername,
   extractAuthoritativeUsers,
@@ -1659,6 +1660,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
       port: listeningPort,
     });
     res.json(result);
+  });
+
+  // 2b. Dedicated User Existence & Syntax Validation Endpoint
+  app.post('/api/user/validate', async (req, res) => {
+    try {
+      const { target, platform = 'TIKTOK', cookie = '' } = req.body || {};
+      if (typeof target !== 'string' || !target.trim()) {
+        res.status(400).json({ ok: false, error: 'Target username is required' });
+        return;
+      }
+
+      const result = await validateTargetUser(
+        target.trim(),
+        String(platform),
+        typeof cookie === 'string' ? cookie : ''
+      );
+      res.json({
+        ok: true,
+        result,
+      });
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   // 3. Dedicated Real-Time Live Status Check Endpoint
