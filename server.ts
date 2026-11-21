@@ -665,10 +665,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
       config: {
         targetsByPlatform: { TIKTOK: [], INSTAGRAM: [], FACEBOOK: [], X: [] },
         cookies: {
-          tiktok: normalizeCookieValue(options.envCookies?.tiktok),
-          instagram: normalizeCookieValue(options.envCookies?.instagram),
-          facebook: normalizeCookieValue(options.envCookies?.facebook),
-          x: normalizeCookieValue(options.envCookies?.x),
+          tiktok: normalizeCookieValue(options.envCookies?.tiktok ?? process.env.TIKTOK_COOKIE ?? process.env.TIKTOK_SESSION_ID),
+          instagram: normalizeCookieValue(options.envCookies?.instagram ?? process.env.INSTAGRAM_COOKIE ?? process.env.INSTAGRAM_SESSION_ID),
+          facebook: normalizeCookieValue(options.envCookies?.facebook ?? process.env.FACEBOOK_COOKIE),
+          x: normalizeCookieValue(options.envCookies?.x ?? process.env.X_COOKIE ?? process.env.TWITTER_COOKIE),
         },
         enableWarmup: true,
         autoDownloadMedia: true,
@@ -712,15 +712,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
       const tikTokUsers = targetsByPlatform.TIKTOK;
       watcher.setTargetUsers?.(tikTokUsers);
     }
-    if (initialState?.scannerSettings?.cookies) {
-      const wsCookies = initialState.scannerSettings.cookies;
-      const envCookies = options.envCookies || {};
-      const mergedCookies = {
-        tiktok: (wsCookies.tiktok ?? envCookies.tiktok ?? '').trim(),
-        instagram: (wsCookies.instagram ?? envCookies.instagram ?? '').trim(),
-        facebook: (wsCookies.facebook ?? envCookies.facebook ?? '').trim(),
-        x: (wsCookies.x ?? envCookies.x ?? '').trim(),
-      };
+    const defaultEnvCookies = {
+      tiktok: normalizeCookieValue(options.envCookies?.tiktok ?? process.env.TIKTOK_COOKIE ?? process.env.TIKTOK_SESSION_ID),
+      instagram: normalizeCookieValue(options.envCookies?.instagram ?? process.env.INSTAGRAM_COOKIE ?? process.env.INSTAGRAM_SESSION_ID),
+      facebook: normalizeCookieValue(options.envCookies?.facebook ?? process.env.FACEBOOK_COOKIE),
+      x: normalizeCookieValue(options.envCookies?.x ?? process.env.X_COOKIE ?? process.env.TWITTER_COOKIE),
+    };
+    const wsCookies = initialState?.scannerSettings?.cookies || {};
+    const mergedCookies = {
+      tiktok: (wsCookies.tiktok !== undefined ? wsCookies.tiktok : (defaultEnvCookies.tiktok ?? '')).trim(),
+      instagram: (wsCookies.instagram !== undefined ? wsCookies.instagram : (defaultEnvCookies.instagram ?? '')).trim(),
+      facebook: (wsCookies.facebook !== undefined ? wsCookies.facebook : (defaultEnvCookies.facebook ?? '')).trim(),
+      x: (wsCookies.x !== undefined ? wsCookies.x : (defaultEnvCookies.x ?? '')).trim(),
+    };
+    if (mergedCookies.tiktok || mergedCookies.instagram || mergedCookies.facebook || mergedCookies.x || initialState?.scannerSettings?.cookies) {
       if (typeof (watcher as any).updateCookies === 'function') {
         (watcher as any).updateCookies(mergedCookies);
       }
@@ -728,10 +733,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         tiktokSessionId: mergedCookies.tiktok,
         cookies: mergedCookies,
       } as any);
-    } else if (typeof initialState?.scannerSettings?.cookies?.tiktok === 'string') {
-      const wsCookie = initialState.scannerSettings.cookies.tiktok.trim();
-      const envCookie = normalizeCookieValue(options.envCookies?.tiktok);
-      watcher.updateConfig({ tiktokSessionId: wsCookie || envCookie });
     }
     const platformsCfg = (initialState?.scannerSettings as any)?.platforms;
     if (platformsCfg) {
@@ -1620,15 +1621,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         const tikTokUsers = targetsByPlatform.TIKTOK;
         watcher.setTargetUsers?.(tikTokUsers);
       }
-      if (state.scannerSettings?.cookies) {
-        const wsCookies = state.scannerSettings.cookies;
-        const envCookies = options.envCookies || {};
-        const mergedCookies = {
-          tiktok: (wsCookies.tiktok ?? envCookies.tiktok ?? '').trim(),
-          instagram: (wsCookies.instagram ?? envCookies.instagram ?? '').trim(),
-          facebook: (wsCookies.facebook ?? envCookies.facebook ?? '').trim(),
-          x: (wsCookies.x ?? envCookies.x ?? '').trim(),
-        };
+      const defaultEnvCookies = {
+        tiktok: normalizeCookieValue(options.envCookies?.tiktok ?? process.env.TIKTOK_COOKIE ?? process.env.TIKTOK_SESSION_ID),
+        instagram: normalizeCookieValue(options.envCookies?.instagram ?? process.env.INSTAGRAM_COOKIE ?? process.env.INSTAGRAM_SESSION_ID),
+        facebook: normalizeCookieValue(options.envCookies?.facebook ?? process.env.FACEBOOK_COOKIE),
+        x: normalizeCookieValue(options.envCookies?.x ?? process.env.X_COOKIE ?? process.env.TWITTER_COOKIE),
+      };
+      const wsCookies = state.scannerSettings?.cookies || {};
+      const mergedCookies = {
+        tiktok: (wsCookies.tiktok !== undefined ? wsCookies.tiktok : (defaultEnvCookies.tiktok ?? '')).trim(),
+        instagram: (wsCookies.instagram !== undefined ? wsCookies.instagram : (defaultEnvCookies.instagram ?? '')).trim(),
+        facebook: (wsCookies.facebook !== undefined ? wsCookies.facebook : (defaultEnvCookies.facebook ?? '')).trim(),
+        x: (wsCookies.x !== undefined ? wsCookies.x : (defaultEnvCookies.x ?? '')).trim(),
+      };
+      if (mergedCookies.tiktok || mergedCookies.instagram || mergedCookies.facebook || mergedCookies.x || state.scannerSettings?.cookies) {
         if (typeof (watcher as any).updateCookies === 'function') {
           (watcher as any).updateCookies(mergedCookies);
         }
@@ -1636,10 +1642,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           tiktokSessionId: mergedCookies.tiktok,
           cookies: mergedCookies,
         } as any);
-      } else if (typeof state.scannerSettings?.cookies?.tiktok === 'string') {
-        const wsCookie = state.scannerSettings.cookies.tiktok.trim();
-        const envCookie = normalizeCookieValue(options.envCookies?.tiktok);
-        watcher.updateConfig({ tiktokSessionId: wsCookie || envCookie });
       }
       const platformsCfg = (state.scannerSettings as any)?.platforms;
       if (platformsCfg) {
