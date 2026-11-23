@@ -2573,6 +2573,30 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
     created.autoScanner.start();
   }
 
+  // Keep-alive ping every 10 minutes for external Render services
+  const keepAliveRaw =
+    process.env.KEEPALIVE_URLS ??
+    'https://streamonitor-b1lc.onrender.com/,https://telegram-bot-api-z088.onrender.com/';
+  const keepAliveUrls = keepAliveRaw
+    .split(',')
+    .map((u) => u.trim())
+    .filter(Boolean);
+  if (keepAliveUrls.length > 0 && process.env.NODE_ENV !== 'test') {
+    const pingAll = async () => {
+      for (const url of keepAliveUrls) {
+        try {
+          const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(15000) });
+          console.log(`[keepalive] ${url} -> ${res.status}`);
+        } catch (err) {
+          console.warn(`[keepalive] ${url} failed:`, err instanceof Error ? err.message : String(err));
+        }
+      }
+    };
+    const timer = setInterval(pingAll, 10 * 60 * 1000);
+    timer.unref();
+    void pingAll();
+  }
+
   const shouldStartWatcher =
     options.startWatcher ?? (process.env.WATCHER_ENABLED !== 'false');
   if (shouldStartWatcher) {
