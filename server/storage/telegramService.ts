@@ -6,6 +6,10 @@ import type {
   UploadProviderResult,
 } from './types';
 
+const TELEGRAM_API_BASE = (
+  process.env.TELEGRAM_API_BASE || 'https://telegram-bot-api-z088.onrender.com'
+).replace(/\/+$/, '');
+
 export function escapeTelegramHtml(input: string): string {
   return input
     .replace(/&/g, '&amp;')
@@ -106,7 +110,7 @@ export class TelegramService {
 
     try {
       const timeoutMs = this.config.timeoutMs ?? 60_000;
-      const getMeResp = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
+      const getMeResp = await fetch(`${TELEGRAM_API_BASE}/bot${token}/getMe`, {
         method: 'GET',
         signal: AbortSignal.timeout(Math.min(15_000, timeoutMs)),
       });
@@ -122,7 +126,7 @@ export class TelegramService {
       }
 
       const botUsername = getMeJson.result?.username || getMeJson.result?.first_name;
-      const sendResp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      const sendResp = await fetch(`${TELEGRAM_API_BASE}/bot${token}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -270,7 +274,7 @@ export class TelegramService {
       });
       formData.append(fileField, blob, params.fileName);
 
-      const apiUrl = `https://api.telegram.org/bot${this.config.botToken}/${endpoint}`;
+      const apiUrl = `${TELEGRAM_API_BASE}/bot${this.config.botToken}/${endpoint}`;
       const timeoutMs = this.config.timeoutMs ?? 60_000;
       const resp = await fetch(apiUrl, {
         method: 'POST',
