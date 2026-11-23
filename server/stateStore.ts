@@ -1,23 +1,31 @@
 ﻿import fs from 'node:fs';
 import path from 'node:path';
 import {
+  createDefaultMultiPlatformSettings,
+  normalizeMultiPlatformSettings,
   resolvePlatformProfileUrl,
   type AlertDetectionItem,
   type KeywordRuleItem,
   type LivePlatform,
+  type MultiPlatformSettings,
   type PlatformCookies,
   type TargetProfileMeta,
+  type TargetStreamMeta,
+  type TelegramStorageSettings,
   type WebhookServerItem,
 } from '../src/utils/scannerEngine';
+import { detectLivePlatform } from './liveCheckers/index';
 import { canonicalizeUsername, makeCanonicalKey, parseStrictPlatform } from './reconcile';
 import type { PendingDeviceNotification } from './watchers/types';
 
-export type { TargetProfileMeta };
+export type { TargetProfileMeta, TargetStreamMeta, TelegramStorageSettings };
 
 export interface ScannerSettingsState {
   cookies: Required<PlatformCookies>;
   pollIntervalSeconds: number;
   deduplicateLive: boolean;
+  platforms?: MultiPlatformSettings;
+  telegram?: TelegramStorageSettings;
 }
 
 export interface WorkspaceState {
@@ -26,6 +34,7 @@ export interface WorkspaceState {
   alerts: AlertDetectionItem[];
   scannerSettings: ScannerSettingsState;
   targetProfiles?: Record<string, TargetProfileMeta>;
+  targetStreamMetaMap?: Record<string, TargetStreamMeta>;
   updatedAt: string;
 }
 
@@ -130,7 +139,9 @@ export interface StateStore {
   androidFile: string;
   readWorkspaceState: () => Promise<WorkspaceState>;
   readWorkspaceStateIfExists: () => Promise<WorkspaceState | null>;
-  writeWorkspaceState: (partialOrFull: Partial<WorkspaceState>) => Promise<WorkspaceState>;
+  writeWorkspaceState: (
+    partialOrFull: Partial<WorkspaceState> & { platforms?: unknown }
+  ) => Promise<WorkspaceState>;
   readAndroidState: () => Promise<AndroidState>;
   updateAndroidState: (mutator: (current: AndroidState) => AndroidState | void) => Promise<AndroidState>;
   flush: () => Promise<void>;
@@ -157,8 +168,15 @@ export function createDefaultWorkspaceState(): WorkspaceState {
       },
       pollIntervalSeconds: 30,
       deduplicateLive: true,
+      platforms: createDefaultMultiPlatformSettings(),
+      telegram: {
+        botToken: '',
+        chatId: '',
+        enabled: true,
+      },
     },
     targetProfiles: {},
+    targetStreamMetaMap: {},
     updatedAt: new Date(0).toISOString(),
   };
 }
@@ -188,10 +206,13 @@ export function createDefaultAndroidState(): AndroidState {
 
 function normalizeScannerSettings(
   incoming?: Partial<ScannerSettingsState> | null,
-  fallback?: ScannerSettingsState
+  fallback?: ScannerSettingsState,
+  topLevelPlatforms?: unknown
 ): ScannerSettingsState {
   const base = fallback ?? createDefaultWorkspaceState().scannerSettings;
   const poll = incoming?.pollIntervalSeconds;
+  const incomingPlatforms = incoming?.platforms ?? topLevelPlatforms;
+  const basePlatforms = base.platforms ?? createDefaultMultiPlatformSettings();
   return {
     cookies: {
       tiktok: typeof incoming?.cookies?.tiktok === 'string' ? incoming.cookies.tiktok : base.cookies.tiktok,
@@ -208,7 +229,156 @@ function normalizeScannerSettings(
     pollIntervalSeconds: typeof poll === 'number' && Number.isFinite(poll) && poll >= 10 ? poll : base.pollIntervalSeconds,
     deduplicateLive:
       typeof incoming?.deduplicateLive === 'boolean' ? incoming.deduplicateLive : base.deduplicateLive,
+    platforms: normalizeMultiPlatformSettings(
+      incomingPlatforms as Partial<MultiPlatformSettings> | undefined,
+      basePlatforms
+    ),
+    telegram: {
+      botToken:
+        typeof incoming?.telegram?.botToken === 'string'
+          ? incoming.telegram.botToken.trim()
+          : base.telegram?.botToken ?? '',
+      chatId:
+        typeof incoming?.telegram?.chatId === 'string'
+          ? incoming.telegram.chatId.trim()
+          : base.telegram?.chatId ?? '',
+      enabled:
+        typeof incoming?.telegram?.enabled === 'boolean'
+          ? incoming.telegram.enabled
+          : base.telegram?.enabled ?? true,
+    },
   };
+}
+
+export function normalizeTargetStreamMetaMap(
+  incoming: unknown,
+  fallback?: Record<string, TargetStreamMeta>
+): Record<string, TargetStreamMeta> {
+  if (incoming === undefined) {
+    return fallback ? normalizeTargetStreamMetaMap(fallback) : {};
+  }
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+    return {};
+  }
+  const out: Record<string, TargetStreamMeta> = {};
+  for (const [rawKey, rawVal] of Object.entries(incoming as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (!key || key.length > 512) continue;
+    if (!rawVal || typeof rawVal !== 'object' || Array.isArray(rawVal)) continue;
+    if (Object.keys(out).length >= 2000 && !out[key]) continue;
+    const v = rawVal as Record<string, unknown>;
+    out[key] = {
+      live: typeof v.live === 'boolean' ? v.live : true,
+      post: typeof v.post === 'boolean' ? v.post : true,
+      story: typeof v.story === 'boolean' ? v.story : true,
+      warmup: typeof v.warmup === 'boolean' ? v.warmup : true,
+    };
+  }
+  return out;
+}
+
+export function resolveTargetStreamMeta(
+  metaMap: Record<string, TargetStreamMeta> | undefined,
+  params: {
+    ruleId?: string;
+    rawTarget?: string;
+    platform?: LivePlatform;
+    canonicalUsername?: string;
+  }
+): TargetStreamMeta {
+  const fallback: TargetStreamMeta = { live: true, post: true, story: true, warmup: true };
+  if (!metaMap || typeof metaMap !== 'object') return fallback;
+
+  const toResolved = (entry: TargetStreamMeta): TargetStreamMeta => ({
+    live: entry.live !== false,
+    post: entry.post !== false,
+    story: entry.story !== false,
+    warmup: entry.warmup !== false,
+  });
+
+  const rawTrimmed = typeof params.rawTarget === 'string' ? params.rawTarget.trim() : '';
+  const canonicalFromParam =
+    typeof params.canonicalUsername === 'string'
+      ? params.canonicalUsername.trim().replace(/^@+/, '').toLowerCase()
+      : '';
+  const canonicalFromRaw = rawTrimmed
+    ? params.platform
+      ? canonicalizeUsername(rawTrimmed, params.platform)
+      : canonicalizeUsername(rawTrimmed, detectLivePlatform(rawTrimmed, 'TIKTOK')) ||
+        rawTrimmed.replace(/^@+/, '').toLowerCase()
+    : '';
+  const canonical = canonicalFromParam || canonicalFromRaw;
+
+  const candidates: string[] = [];
+  if (params.ruleId && rawTrimmed) {
+    candidates.push(`${params.ruleId}::${rawTrimmed}`);
+  }
+  if (params.ruleId && canonical) {
+    candidates.push(`${params.ruleId}::@${canonical}`);
+    candidates.push(`${params.ruleId}::${canonical}`);
+  }
+  if (params.platform && canonical) {
+    candidates.push(`${params.platform}::${canonical}`);
+  }
+
+  for (const key of candidates) {
+    const entry = metaMap[key];
+    if (entry && typeof entry === 'object') {
+      return toResolved(entry);
+    }
+  }
+
+  if (canonical) {
+    const entries = Object.entries(metaMap);
+
+    // Rule-scoped case-insensitive and canonicalized URL/handle match
+    if (params.ruleId) {
+      for (const [key, entry] of entries) {
+        if (!entry || typeof entry !== 'object') continue;
+        const sepIdx = key.indexOf('::');
+        if (sepIdx <= 0) continue;
+        const keyPrefix = key.slice(0, sepIdx).trim();
+        if (keyPrefix !== params.ruleId) continue;
+        const keyTarget = key.slice(sepIdx + 2).trim();
+        if (!keyTarget) continue;
+
+        if (keyTarget.replace(/^@+/, '').toLowerCase() === canonical) {
+          return toResolved(entry);
+        }
+
+        const isExplicitUrl = /^https?:\/\//i.test(keyTarget);
+        const targetPlatform = params.platform ?? detectLivePlatform(keyTarget, 'TIKTOK');
+        if (params.platform && isExplicitUrl && detectLivePlatform(keyTarget, params.platform) !== params.platform) {
+          continue;
+        }
+        if (canonicalizeUsername(keyTarget, targetPlatform) === canonical) {
+          return toResolved(entry);
+        }
+      }
+    }
+
+    // Platform-scoped fallback (case-insensitive & canonicalized URL/handle)
+    if (params.platform) {
+      for (const [key, entry] of entries) {
+        if (!entry || typeof entry !== 'object') continue;
+        const sepIdx = key.indexOf('::');
+        if (sepIdx <= 0) continue;
+        const keyPrefix = key.slice(0, sepIdx).trim();
+        if (keyPrefix.toUpperCase() !== params.platform) continue;
+        const keyTarget = key.slice(sepIdx + 2).trim();
+        if (!keyTarget) continue;
+
+        if (
+          keyTarget.replace(/^@+/, '').toLowerCase() === canonical ||
+          canonicalizeUsername(keyTarget, params.platform) === canonical
+        ) {
+          return toResolved(entry);
+        }
+      }
+    }
+  }
+
+  return fallback;
 }
 
 export function normalizeTargetProfiles(
@@ -293,13 +463,18 @@ function normalizeWorkspaceState(raw: unknown): WorkspaceState {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return def;
   }
-  const obj = raw as Partial<WorkspaceState>;
+  const obj = raw as Partial<WorkspaceState> & { platforms?: unknown };
   return {
     rules: Array.isArray(obj.rules) ? obj.rules : def.rules,
     servers: Array.isArray(obj.servers) ? obj.servers : def.servers,
     alerts: Array.isArray(obj.alerts) ? obj.alerts : def.alerts,
-    scannerSettings: normalizeScannerSettings(obj.scannerSettings, def.scannerSettings),
+    scannerSettings: normalizeScannerSettings(
+      obj.scannerSettings,
+      def.scannerSettings,
+      obj.platforms
+    ),
     targetProfiles: normalizeTargetProfiles(obj.targetProfiles),
+    targetStreamMetaMap: normalizeTargetStreamMetaMap(obj.targetStreamMetaMap),
     updatedAt: typeof obj.updatedAt === 'string' ? obj.updatedAt : def.updatedAt,
   };
 }
@@ -468,7 +643,9 @@ export function createStateStore(dataDir: string): StateStore {
       });
     },
 
-    writeWorkspaceState(partialOrFull: Partial<WorkspaceState>): Promise<WorkspaceState> {
+    writeWorkspaceState(
+      partialOrFull: Partial<WorkspaceState> & { platforms?: unknown }
+    ): Promise<WorkspaceState> {
       return enqueue(workspaceFile, async () => {
         const rawExisting = await readJsonFileIfExists(workspaceFile);
         const existing = normalizeWorkspaceState(rawExisting);
@@ -476,8 +653,16 @@ export function createStateStore(dataDir: string): StateStore {
           rules: Array.isArray(partialOrFull.rules) ? partialOrFull.rules : existing.rules,
           servers: Array.isArray(partialOrFull.servers) ? partialOrFull.servers : existing.servers,
           alerts: Array.isArray(partialOrFull.alerts) ? partialOrFull.alerts : existing.alerts,
-          scannerSettings: normalizeScannerSettings(partialOrFull.scannerSettings, existing.scannerSettings),
+          scannerSettings: normalizeScannerSettings(
+            partialOrFull.scannerSettings,
+            existing.scannerSettings,
+            partialOrFull.platforms
+          ),
           targetProfiles: normalizeTargetProfiles(partialOrFull.targetProfiles, existing.targetProfiles),
+          targetStreamMetaMap: normalizeTargetStreamMetaMap(
+            partialOrFull.targetStreamMetaMap,
+            existing.targetStreamMetaMap
+          ),
           updatedAt: new Date().toISOString(),
         };
         await atomicWriteJson(workspaceFile, next);

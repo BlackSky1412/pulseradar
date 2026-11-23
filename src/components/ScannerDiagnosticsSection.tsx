@@ -8,13 +8,14 @@ export interface WatcherDiagnosticItem {
   status: string;
   usedCookie?: boolean;
   itemCount?: number;
+  newItemCount?: number;
   reason?: string;
   checkedAt?: string;
 }
 
 export interface ScannerDiagnosticsSectionProps {
   diagnostics?: WatcherDiagnosticItem[];
-  lastScanAt?: string;
+  lastScanAt?: string | null;
 }
 
 const PLATFORM_COLORS: Record<string, string> = {
@@ -133,7 +134,9 @@ export function ScannerDiagnosticsSection({ diagnostics = [], lastScanAt }: Scan
             <tbody className="divide-y divide-slate-800/50 text-slate-200 text-[11px]">
               {filtered.slice(0, 100).map((d, idx) => {
                 const isOk = d.status === 'OK' || d.status === 'WARMED_UP';
-                const hasItem = (d.itemCount ?? 0) > 0;
+                const newCount = typeof d.newItemCount === 'number' ? d.newItemCount : (d.status === 'WARMED_UP' ? 0 : (d.itemCount ?? 0));
+                const totalCount = d.itemCount ?? 0;
+                const hasNewItem = newCount > 0;
                 return (
                   <tr key={`${d.platform}_${d.username}_${d.eventType}_${idx}`} className="hover:bg-slate-900/50 transition-colors">
                     <td className="py-2 px-4 text-slate-400 whitespace-nowrap">
@@ -165,15 +168,19 @@ export function ScannerDiagnosticsSection({ diagnostics = [], lastScanAt }: Scan
                       )}
                     </td>
                     <td className="py-2 px-4 font-sans">
-                      {hasItem ? (
+                      {hasNewItem ? (
                         <span className="text-emerald-400 font-bold flex items-center gap-1.5">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                          Phát hiện {d.itemCount} mục mới (Đã tải)
+                          Phát hiện {newCount} mục mới (Đã tải)
                         </span>
                       ) : isOk ? (
                         <span className="text-slate-300 flex items-center gap-1.5">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400/80" />
-                          {d.status === 'WARMED_UP' ? 'Mốc ban đầu (0 mới)' : 'Đã quét (0 mục mới)'}
+                          {d.status === 'WARMED_UP'
+                            ? `Mốc ban đầu (0 mới${totalCount > 0 ? ` · ${totalCount} đã lưu` : ''})`
+                            : totalCount > 0
+                            ? `Đã quét (0 mục mới · ${totalCount} đã tải trước đó)`
+                            : 'Đã quét (0 mục mới)'}
                         </span>
                       ) : (
                         <span className="text-amber-400 flex items-center gap-1.5" title={d.reason || d.status}>

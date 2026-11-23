@@ -90,11 +90,18 @@ export interface PlatformCookies {
   x: string;
 }
 
+export interface TelegramStorageSettings {
+  botToken: string;
+  chatId: string;
+  enabled: boolean;
+}
+
 export interface ScannerSettingsState {
   cookies: Required<PlatformCookies>;
   pollIntervalSeconds: number;
   deduplicateLive: boolean;
   platforms?: MultiPlatformSettings;
+  telegram?: TelegramStorageSettings;
 }
 
 export interface LiveScannerSettings {
@@ -102,6 +109,7 @@ export interface LiveScannerSettings {
   pollIntervalSeconds: number;
   deduplicateLive: boolean;
   platforms?: MultiPlatformSettings;
+  telegram?: TelegramStorageSettings;
 }
 
 export interface LiveTargetScanStatus {

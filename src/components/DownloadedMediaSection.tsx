@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Film, Image as ImageIcon, Search, Download, ExternalLink, RefreshCw, FolderDown } from 'lucide-react';
+import { Film, Image as ImageIcon, Search, Download, ExternalLink, RefreshCw, FolderDown, Send, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 
 export interface DownloadedMediaItem {
   username: string;
@@ -28,6 +28,43 @@ function formatBytes(bytes: number): string {
 export function DownloadedMediaSection({ media, isLoading, onRefresh }: DownloadedMediaSectionProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'stories' | 'posts'>('all');
+  const [pushingFileKey, setPushingFileKey] = useState<string | null>(null);
+  const [pushedMap, setPushedMap] = useState<Record<string, { ok: boolean; msg: string }>>({});
+
+  const handlePushCloud = async (item: DownloadedMediaItem) => {
+    const key = `${item.username}::${item.eventType}::${item.fileName}`;
+    setPushingFileKey(key);
+    try {
+      const resp = await fetch('/api/media/push-cloud', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: item.username,
+          eventType: item.eventType,
+          fileName: item.fileName,
+        }),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        setPushedMap(prev => ({
+          ...prev,
+          [key]: { ok: true, msg: 'Đã đẩy Telegram' },
+        }));
+      } else {
+        setPushedMap(prev => ({
+          ...prev,
+          [key]: { ok: false, msg: data.error || 'Lỗi upload' },
+        }));
+      }
+    } catch (err) {
+      setPushedMap(prev => ({
+        ...prev,
+        [key]: { ok: false, msg: err instanceof Error ? err.message : 'Lỗi kết nối' },
+      }));
+    } finally {
+      setPushingFileKey(null);
+    }
+  };
 
   const filteredMedia = useMemo(() => {
     return media.filter(item => {
@@ -164,15 +201,57 @@ export function DownloadedMediaSection({ media, isLoading, onRefresh }: Download
                       {new Date(item.mtime).toLocaleString()}
                     </td>
                     <td className="py-2.5 px-4 text-right font-sans">
-                      <a
-                        href={item.downloadUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-indigo-300 hover:text-indigo-200 bg-indigo-950/60 hover:bg-indigo-900/80 border border-indigo-700/50 rounded-lg transition-colors"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        Xem / Tải
-                      </a>
+                      <div className="inline-flex items-center justify-end gap-1.5">
+                        {(() => {
+                          const fKey = `${item.username}::${item.eventType}::${item.fileName}`;
+                          const isPushing = pushingFileKey === fKey;
+                          const pushRes = pushedMap[fKey];
+                          return (
+                            <>
+                              {pushRes && (
+                                <span
+                                  title={pushRes.msg}
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium max-w-[160px] truncate ${
+                                    pushRes.ok
+                                      ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-700/50'
+                                      : 'bg-rose-950/60 text-rose-300 border border-rose-700/50'
+                                  }`}
+                                >
+                                  {pushRes.ok ? (
+                                    <CheckCircle2 className="w-3 h-3 shrink-0" />
+                                  ) : (
+                                    <AlertCircle className="w-3 h-3 shrink-0" />
+                                  )}
+                                  <span className="truncate">{pushRes.msg}</span>
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => void handlePushCloud(item)}
+                                disabled={isPushing}
+                                title="Đẩy file này sang Kênh Telegram / Google Drive"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-sky-300 hover:text-sky-200 bg-sky-950/60 hover:bg-sky-900/80 border border-sky-700/50 rounded-lg transition-colors disabled:opacity-50"
+                              >
+                                {isPushing ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Send className="w-3 h-3" />
+                                )}
+                                Đẩy Tele
+                              </button>
+                            </>
+                          );
+                        })()}
+                        <a
+                          href={item.downloadUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-indigo-300 hover:text-indigo-200 bg-indigo-950/60 hover:bg-indigo-900/80 border border-indigo-700/50 rounded-lg transition-colors"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          Xem / Tải
+                        </a>
+                      </div>
                     </td>
                   </tr>
                 );

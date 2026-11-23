@@ -327,6 +327,12 @@ export default function App() {
   const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
   const lastSyncedWorkspaceJsonRef = useRef<string | null>(null);
   const lastSyncedPartialWorkspaceJsonRef = useRef<string | null>(null);
+  const currentUserRef = useRef<User | null>(null);
+  const firestoreLoadedRef = useRef<{ rules: boolean; servers: boolean; alerts: boolean }>({
+    rules: false,
+    servers: false,
+    alerts: false,
+  });
   const [androidStatus, setAndroidStatus] = useState<AndroidRuntimeStatus | null>(null);
   const [watcherStatus, setWatcherStatus] = useState<WatcherStatusData | null>(null);
   const [downloadedMedia, setDownloadedMedia] = useState<DownloadedMediaItem[]>([]);
@@ -414,6 +420,13 @@ export default function App() {
               : 60,
           deduplicateLive: parsed.deduplicateLive ?? true,
           platforms: normalizeMultiPlatformSettings(parsed.platforms),
+          telegram: parsed.telegram
+            ? {
+                botToken: String(parsed.telegram.botToken || ''),
+                chatId: String(parsed.telegram.chatId || ''),
+                enabled: parsed.telegram.enabled ?? true,
+              }
+            : { botToken: '', chatId: '', enabled: true },
         };
       }
     } catch {
@@ -424,6 +437,7 @@ export default function App() {
       pollIntervalSeconds: 60,
       deduplicateLive: true,
       platforms: normalizeMultiPlatformSettings(),
+      telegram: { botToken: '', chatId: '', enabled: true },
     };
   });
 
@@ -510,6 +524,13 @@ export default function App() {
                       : 60,
                   deduplicateLive: st.scannerSettings.deduplicateLive ?? true,
                   platforms: normalizeMultiPlatformSettings(st.scannerSettings.platforms),
+                  telegram: st.scannerSettings.telegram
+                    ? {
+                        botToken: String(st.scannerSettings.telegram.botToken || ''),
+                        chatId: String(st.scannerSettings.telegram.chatId || ''),
+                        enabled: st.scannerSettings.telegram.enabled ?? true,
+                      }
+                    : scannerSettings.telegram ?? { botToken: '', chatId: '', enabled: true },
                 }
               : scannerSettings;
 
@@ -520,23 +541,43 @@ export default function App() {
               ? (st.targetProfiles as Record<string, TargetProfileMeta>)
               : targetProfiles;
 
+          const nextTargetStreamMetaMap: Record<string, TargetStreamMeta> =
+            st.targetStreamMetaMap &&
+            typeof st.targetStreamMetaMap === 'object' &&
+            !Array.isArray(st.targetStreamMetaMap)
+              ? (st.targetStreamMetaMap as Record<string, TargetStreamMeta>)
+              : targetStreamMetaMap;
+
           lastSyncedWorkspaceJsonRef.current = JSON.stringify({
             rules: nextRules,
             servers: nextServers,
             alerts: nextAlerts.slice(0, 100),
             scannerSettings: nextScannerSettings,
             targetProfiles: nextTargetProfiles,
+            targetStreamMetaMap: nextTargetStreamMetaMap,
           });
           lastSyncedPartialWorkspaceJsonRef.current = JSON.stringify({
+            rules: nextRules,
+            servers: nextServers,
             scannerSettings: nextScannerSettings,
             targetProfiles: nextTargetProfiles,
+            targetStreamMetaMap: nextTargetStreamMetaMap,
           });
 
-          setRules(nextRules);
-          if (Array.isArray(st.servers) && st.servers.length > 0) {
+          if (!currentUserRef.current || !firestoreLoadedRef.current.rules) {
+            setRules(nextRules);
+          }
+          if (
+            Array.isArray(st.servers) &&
+            st.servers.length > 0 &&
+            (!currentUserRef.current || !firestoreLoadedRef.current.servers)
+          ) {
             setServers(st.servers);
           }
-          if (Array.isArray(st.alerts)) {
+          if (
+            Array.isArray(st.alerts) &&
+            (!currentUserRef.current || !firestoreLoadedRef.current.alerts)
+          ) {
             setAlerts(st.alerts);
           }
           if (st.scannerSettings && typeof st.scannerSettings === 'object') {
@@ -552,6 +593,21 @@ export default function App() {
               localStorage.setItem(
                 'pulseradar_target_profiles_v1',
                 JSON.stringify(nextTargetProfiles)
+              );
+            } catch {
+              // ignore
+            }
+          }
+          if (
+            st.targetStreamMetaMap &&
+            typeof st.targetStreamMetaMap === 'object' &&
+            !Array.isArray(st.targetStreamMetaMap)
+          ) {
+            setTargetStreamMetaMap(nextTargetStreamMetaMap);
+            try {
+              localStorage.setItem(
+                'pulseradar_target_stream_meta_v1',
+                JSON.stringify(nextTargetStreamMetaMap)
               );
             } catch {
               // ignore
@@ -578,6 +634,10 @@ export default function App() {
         JSON.stringify(scannerSettings)
       );
       localStorage.setItem('pulseradar_target_profiles_v1', JSON.stringify(targetProfiles));
+      localStorage.setItem(
+        'pulseradar_target_stream_meta_v1',
+        JSON.stringify(targetStreamMetaMap)
+      );
       if (!currentUser) {
         localStorage.setItem('pulseradar_local_rules_v2', JSON.stringify(rules));
         localStorage.setItem('pulseradar_local_servers_v2', JSON.stringify(servers));
@@ -589,8 +649,11 @@ export default function App() {
 
     if (currentUser) {
       const partialJson = JSON.stringify({
+        rules,
+        servers,
         scannerSettings,
         targetProfiles,
+        targetStreamMetaMap,
       });
       if (partialJson === lastSyncedPartialWorkspaceJsonRef.current) return;
 
@@ -618,6 +681,7 @@ export default function App() {
       alerts: alerts.slice(0, 100),
       scannerSettings,
       targetProfiles,
+      targetStreamMetaMap,
     });
     if (payloadJson === lastSyncedWorkspaceJsonRef.current) return;
 
@@ -637,11 +701,24 @@ export default function App() {
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [rules, servers, alerts, scannerSettings, targetProfiles, currentUser, workspaceHydrated]);
+  }, [
+    rules,
+    servers,
+    alerts,
+    scannerSettings,
+    targetProfiles,
+    targetStreamMetaMap,
+    currentUser,
+    workspaceHydrated,
+  ]);
 
   // Firebase auth state
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, user => {
+      currentUserRef.current = user;
+      if (!user) {
+        firestoreLoadedRef.current = { rules: false, servers: false, alerts: false };
+      }
       setCurrentUser(user);
       setAuthReady(true);
     });
@@ -658,6 +735,7 @@ export default function App() {
     const unsubsRules = onSnapshot(
       rulesQuery,
       snapshot => {
+        firestoreLoadedRef.current.rules = true;
         const items: KeywordRuleItem[] = [];
         snapshot.forEach(docSnap => {
           const d = docSnap.data();
@@ -675,7 +753,7 @@ export default function App() {
             updatedAt: toIsoString(d.updatedAt),
           });
         });
-        if (items.length > 0) setRules(items);
+        if (items.length > 0) setRules(ensureAllPlatformRules(items));
       },
       err => handleFirestoreError(err, OperationType.LIST, 'keyword_rules')
     );
@@ -687,6 +765,7 @@ export default function App() {
     const unsubsServers = onSnapshot(
       serversQuery,
       snapshot => {
+        firestoreLoadedRef.current.servers = true;
         const items: WebhookServerItem[] = [];
         snapshot.forEach(docSnap => {
           const d = docSnap.data();
@@ -714,6 +793,7 @@ export default function App() {
     const unsubsAlerts = onSnapshot(
       alertsQuery,
       snapshot => {
+        firestoreLoadedRef.current.alerts = true;
         const items: AlertDetectionItem[] = [];
         snapshot.forEach(docSnap => {
           const d = docSnap.data();
@@ -889,10 +969,16 @@ export default function App() {
 
       const effectiveInjectedText =
         options?.injectedText !== undefined ? options.injectedText : '';
+      const scanActivityType = options?.activityType;
+      const isCollectorScan =
+        !effectiveInjectedText &&
+        (scanActivityType === 'post' || scanActivityType === 'story');
 
       setLastScanSummary(
         effectiveInjectedText
-          ? `Đang gửi sự kiện [${(options?.activityType || 'post').toUpperCase()}] về máy chủ Webhook...`
+          ? `Đang gửi sự kiện [${(scanActivityType || 'post').toUpperCase()}] về máy chủ Webhook...`
+          : isCollectorScan
+          ? `Đang quét ${scanActivityType.toUpperCase()} thật cho ${PLATFORM_BRAND_NAMES[selectedPlatform]}...`
           : singleKey
           ? `Đang quét trạng thái Live thật cho ${options!.specificTargets![0]}...`
           : `Đang quét trạng thái Live thật trên ${targetRules.length} Trang Nguồn (TikTok / Instagram / Facebook / X)...`
@@ -908,7 +994,8 @@ export default function App() {
             cookies: scannerSettings.cookies,
             specificTargets: options?.specificTargets,
             customSampleText: effectiveInjectedText,
-            simulatedActivityType: options?.activityType,
+            activityType: scanActivityType,
+            simulatedActivityType: scanActivityType,
             isAutoScan: Boolean(options?.isAutoScan),
             deduplicateLive: scannerSettings.deduplicateLive,
           }),
@@ -956,15 +1043,29 @@ export default function App() {
           setAlerts(prev => [...newDetections, ...prev].slice(0, 200));
         }
 
-        const liveFoundCount = returnedStatuses.filter(s => s.status === 'LIVE').length;
-        setLastScanSummary(
-          `Quét hoàn tất: Kiểm tra ${returnedStatuses.length} kênh · ${
-            liveFoundCount > 0 ? `🔥 Phát hiện ${liveFoundCount} user ĐANG LIVE` : 'Hiện không có kênh nào đang Live'
-          } · ${newDetections.length} Alert Webhook đã bắn.`
-        );
+        if (data.mode === 'post' || data.mode === 'story') {
+          const rep = data.report || {};
+          const checkedCount = Number(rep.targetsChecked ?? data.totalPostsScanned ?? 0);
+          const newCount = Number(rep.newEventsFound ?? 0);
+          const errCount = Array.isArray(rep.errors) ? rep.errors.length : 0;
+          const warmedCount = Number(rep.warmedUpTargets ?? 0);
+          setLastScanSummary(
+            `Quét ${String(data.mode).toUpperCase()} hoàn tất: Kiểm tra ${checkedCount} tài khoản · ${newCount} mục mới${
+              warmedCount > 0 ? ` · ${warmedCount} warmup` : ''
+            }${errCount > 0 ? ` · ${errCount} lỗi` : ''}.`
+          );
+        } else {
+          const liveFoundCount = returnedStatuses.filter(s => s.status === 'LIVE').length;
+          setLastScanSummary(
+            `Quét hoàn tất: Kiểm tra ${returnedStatuses.length} kênh · ${
+              liveFoundCount > 0 ? `🔥 Phát hiện ${liveFoundCount} user ĐANG LIVE` : 'Hiện không có kênh nào đang Live'
+            } · ${newDetections.length} Alert Webhook đã bắn.`
+          );
+        }
 
         void fetchSandboxLogs();
         void fetchWatcherStatus();
+        void fetchDownloadedMedia();
       } catch (err) {
         setLastScanSummary(
           `Quét thất bại: ${err instanceof Error ? err.message : 'Lỗi kết nối bộ quét'}`
@@ -974,7 +1075,17 @@ export default function App() {
         setScanningTargetKey(null);
       }
     },
-    [isScanning, rules, servers, scannerSettings, currentUser, fetchSandboxLogs, fetchWatcherStatus]
+    [
+      isScanning,
+      rules,
+      servers,
+      scannerSettings,
+      currentUser,
+      selectedPlatform,
+      fetchSandboxLogs,
+      fetchWatcherStatus,
+      fetchDownloadedMedia,
+    ]
   );
 
   // Background Auto-Scan ticker when serverAutoScanManaged is not active
@@ -1587,6 +1698,9 @@ export default function App() {
     } catch {
       // ignore
     }
+    setTimeout(() => {
+      void fetchStorageStatus();
+    }, 600);
   };
 
   const handleRetryWebhook = async (alertItem: AlertDetectionItem) => {
@@ -1598,18 +1712,31 @@ export default function App() {
         parsedPayload = { raw: alertItem.payloadJson };
       }
 
+      const matchedServer = servers.find(
+        s => s.name === alertItem.webhookServerName || s.id === alertItem.webhookServerName
+      );
+      const targetUrl = matchedServer?.url?.trim() || '/api/webhook-sandbox';
+      const format = matchedServer?.format || 'json';
+      const secretHeader = matchedServer?.secretHeader || '';
+
       const res = await fetch('/api/webhook/dispatch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          serverName: alertItem.webhookServerName,
+          targetUrl,
+          format,
+          secretHeader,
           payload: parsedPayload,
-          format: 'json',
         }),
       });
       const data = await res.json();
-      const updatedStatus = data.ok ? 'delivered' : 'failed';
-      const updatedStatusCode = data.status || (data.ok ? 200 : 502);
+      const delivered = res.ok && Boolean(data.delivered ?? data.ok);
+      const updatedStatus: 'delivered' | 'failed' = delivered ? 'delivered' : 'failed';
+      const updatedStatusCode = Number(
+        data.httpStatusCode ?? data.status ?? (delivered ? 200 : res.status || 502)
+      );
+      const updatedLatencyMs =
+        typeof data.latencyMs === 'number' ? data.latencyMs : alertItem.latencyMs;
 
       setAlerts(prev =>
         prev.map(a =>
@@ -1618,6 +1745,7 @@ export default function App() {
                 ...a,
                 webhookStatus: updatedStatus,
                 httpStatusCode: updatedStatusCode,
+                latencyMs: updatedLatencyMs,
                 updatedAt: new Date().toISOString(),
               }
             : a
@@ -1631,11 +1759,14 @@ export default function App() {
                 ...prev,
                 webhookStatus: updatedStatus,
                 httpStatusCode: updatedStatusCode,
+                latencyMs: updatedLatencyMs,
                 updatedAt: new Date().toISOString(),
               }
             : null
         );
       }
+
+      void fetchSandboxLogs();
     } catch (err) {
       alert(`Không thể gửi lại Request: ${err instanceof Error ? err.message : 'Lỗi mạng'}`);
     }
@@ -2435,7 +2566,6 @@ export default function App() {
                       runSocialScan({
                         specificRule: activePlatformRule,
                         activityType: 'post',
-                        injectedText: `Kiểm tra video mới nhất từ ${PLATFORM_BRAND_NAMES[selectedPlatform]}`,
                       })
                     }
                     className="w-full min-h-[44px] md:min-h-[36px] inline-flex items-center justify-center gap-1.5 px-3 py-2 md:py-1.5 text-xs font-semibold text-blue-200 bg-blue-950/70 hover:bg-blue-900/70 border border-blue-800/80 rounded-xl transition-colors disabled:opacity-50"
@@ -2508,7 +2638,6 @@ export default function App() {
                       void runSocialScan({
                         specificRule: activePlatformRule,
                         activityType: 'story',
-                        injectedText: `Kiểm tra story 24h mới nhất từ ${PLATFORM_BRAND_NAMES[selectedPlatform]}`,
                       });
                     }}
                     className="w-full min-h-[44px] md:min-h-[36px] inline-flex items-center justify-center gap-1.5 px-3 py-2 md:py-1.5 text-xs font-semibold text-amber-200 bg-amber-950/70 hover:bg-amber-900/70 border border-amber-800/80 rounded-xl transition-colors disabled:opacity-50"
@@ -3030,10 +3159,10 @@ export default function App() {
                     <Flame className="w-3.5 h-3.5 text-rose-500" />
                   </div>
                   <div className="text-sm font-bold text-rose-300">
-                    {activePlatformLiveCount} kênh đang phát
+                    {totalLiveNowCount} kênh đang phát
                   </div>
                   <div className="text-[11px] text-slate-400">
-                    Tổng mục tiêu: {rules.reduce((acc, r) => acc + (r.keyword.match(/@?[a-zA-Z0-9._-]+/g) || []).length, 0)} kênh
+                    Tổng mục tiêu: {totalTrackedTargetsCount} kênh
                   </div>
                   <div className="text-[10px] text-slate-400 font-mono">
                     Tự động đồng bộ Companion
@@ -3088,7 +3217,7 @@ export default function App() {
                   </div>
 
                   {/* Telegram Status */}
-                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono">
+                  <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono">
                     <span className="text-slate-400">Telegram:</span>
                     {storageStatus?.telegram?.configured ? (
                       <span className="text-emerald-400 font-bold flex items-center gap-1">
@@ -3096,10 +3225,22 @@ export default function App() {
                         Đã kết nối Bot ({storageStatus.telegram.chatId})
                       </span>
                     ) : (
-                      <span className="text-slate-400">
-                        Sẵn sàng cấu hình sau
+                      <span className="text-amber-400 font-medium">
+                        Chưa cấu hình Bot Token / Chat ID
                       </span>
                     )}
+                    {storageStatus?.telegram?.lastError && (
+                      <span className="text-rose-400 text-[11px]" title={storageStatus.telegram.lastError}>
+                        (Lỗi: {storageStatus.telegram.lastError.slice(0, 60)})
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsCookieModalOpen(true)}
+                      className="ml-1 px-2 py-0.5 rounded bg-sky-950/80 hover:bg-sky-900 text-sky-300 border border-sky-700/60 text-[11px] font-sans font-semibold transition-colors"
+                    >
+                      Cấu hình Telegram
+                    </button>
                   </div>
                 </div>
               </div>
@@ -3115,7 +3256,7 @@ export default function App() {
             {/* 2. Real-time Live Scanner Execution Logs */}
             <ScannerDiagnosticsSection
               diagnostics={watcherStatus?.diagnostics}
-              lastScanAt={androidStatus?.scanner?.lastScanAt}
+              lastScanAt={androidStatus?.scanner?.lastScanAt ?? undefined}
             />
 
             {/* 3. Section: Activity Log Table & Mobile Cards */}

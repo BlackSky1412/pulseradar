@@ -1,5 +1,5 @@
 ﻿import type { LivePlatform, PlatformCookies } from '../liveCheckers/types';
-import type { MultiPlatformSettings } from '../../src/utils/scannerEngine';
+import type { MultiPlatformSettings, TargetStreamMeta } from '../../src/utils/scannerEngine';
 
 export type { LivePlatform } from '../liveCheckers/types';
 
@@ -64,6 +64,7 @@ export interface TargetCollectorDiagnostic {
   httpStatus?: number;
   usedCookie: boolean;
   itemCount: number;
+  newItemCount?: number;
   checkedAt: string;
 }
 
@@ -71,6 +72,12 @@ export interface MultiPlatformWatcherConfig {
   targetsByPlatform: Partial<Record<LivePlatform, string[]>>;
   cookies?: PlatformCookies;
   platformSettings?: Partial<MultiPlatformSettings>;
+  targetStreamMetaMap?: Record<string, TargetStreamMeta>;
+  targetRuleMap?: Record<string, string>;
+  manageLiveLoop?: boolean;
+  liveIntervalSeconds?: number;
+  postIntervalSeconds?: number;
+  storyIntervalSeconds?: number;
   enableWarmup?: boolean;
   autoDownloadMedia?: boolean;
   driveStorageRoot?: string;

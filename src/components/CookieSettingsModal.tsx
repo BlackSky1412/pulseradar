@@ -10,6 +10,10 @@ import {
   FileText,
   Sparkles,
   Info,
+  Send,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
 } from 'lucide-react';
 import {
   type PlatformCookies,
@@ -54,6 +58,14 @@ export function CookieSettingsModal({
   );
 
   const [deduplicateLive, setDeduplicateLive] = useState(settings.deduplicateLive ?? true);
+  const [telegramBotToken, setTelegramBotToken] = useState(settings.telegram?.botToken || '');
+  const [telegramChatId, setTelegramChatId] = useState(settings.telegram?.chatId || '');
+  const [telegramEnabled, setTelegramEnabled] = useState(settings.telegram?.enabled ?? true);
+  const [testingTelegram, setTestingTelegram] = useState(false);
+  const [telegramTestResult, setTelegramTestResult] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
   const [showSecrets, setShowSecrets] = useState(false);
 
   useEffect(() => {
@@ -68,6 +80,10 @@ export function CookieSettingsModal({
       setPostIntervalSeconds(norm.tiktok.postIntervalSeconds || 240);
       setStoryIntervalSeconds(norm.tiktok.storyIntervalSeconds || 360);
       setDeduplicateLive(settings.deduplicateLive ?? true);
+      setTelegramBotToken(settings.telegram?.botToken || '');
+      setTelegramChatId(settings.telegram?.chatId || '');
+      setTelegramEnabled(settings.telegram?.enabled ?? true);
+      setTelegramTestResult(null);
     }
   }, [isOpen, settings]);
 
@@ -77,30 +93,37 @@ export function CookieSettingsModal({
     e.preventDefault();
 
     const currentNorm = normalizeMultiPlatformSettings(settings.platforms);
+    const baseLive = settings.pollIntervalSeconds || 60;
+    const basePost = currentNorm.tiktok.postIntervalSeconds || 240;
+    const baseStory = currentNorm.tiktok.storyIntervalSeconds || 360;
+    const liveChanged = liveIntervalSeconds !== baseLive;
+    const postChanged = postIntervalSeconds !== basePost;
+    const storyChanged = storyIntervalSeconds !== baseStory;
+
     const updatedPlatforms: MultiPlatformSettings = {
       tiktok: {
         ...currentNorm.tiktok,
-        liveIntervalSeconds,
-        postIntervalSeconds,
-        storyIntervalSeconds,
+        ...(liveChanged ? { liveIntervalSeconds } : {}),
+        ...(postChanged ? { postIntervalSeconds } : {}),
+        ...(storyChanged ? { storyIntervalSeconds } : {}),
       },
       instagram: {
         ...currentNorm.instagram,
-        liveIntervalSeconds,
-        postIntervalSeconds,
-        storyIntervalSeconds,
+        ...(liveChanged ? { liveIntervalSeconds } : {}),
+        ...(postChanged ? { postIntervalSeconds } : {}),
+        ...(storyChanged ? { storyIntervalSeconds } : {}),
       },
       facebook: {
         ...currentNorm.facebook,
-        liveIntervalSeconds,
-        postIntervalSeconds,
-        storyIntervalSeconds,
+        ...(liveChanged ? { liveIntervalSeconds } : {}),
+        ...(postChanged ? { postIntervalSeconds } : {}),
+        ...(storyChanged ? { storyIntervalSeconds } : {}),
       },
       x: {
         ...currentNorm.x,
-        liveIntervalSeconds,
-        postIntervalSeconds,
-        storyIntervalSeconds,
+        ...(liveChanged ? { liveIntervalSeconds } : {}),
+        ...(postChanged ? { postIntervalSeconds } : {}),
+        ...(storyChanged ? { storyIntervalSeconds } : {}),
       },
     };
 
@@ -114,8 +137,48 @@ export function CookieSettingsModal({
       pollIntervalSeconds: liveIntervalSeconds,
       deduplicateLive,
       platforms: updatedPlatforms,
+      telegram: {
+        botToken: telegramBotToken.trim(),
+        chatId: telegramChatId.trim(),
+        enabled: telegramEnabled,
+      },
     });
     onClose();
+  };
+
+  const handleTestTelegram = async () => {
+    setTestingTelegram(true);
+    setTelegramTestResult(null);
+    try {
+      const resp = await fetch('/api/storage/telegram/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          botToken: telegramBotToken.trim(),
+          chatId: telegramChatId.trim(),
+          save: true,
+        }),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        setTelegramTestResult({
+          ok: true,
+          message: `Kết nối thành công! Bot @${data.botUsername || 'bot'} đã gửi tin nhắn kiểm tra tới "${data.chatTitle || telegramChatId}".`,
+        });
+      } else {
+        setTelegramTestResult({
+          ok: false,
+          message: data.error || 'Kết nối Telegram thất bại.',
+        });
+      }
+    } catch (err) {
+      setTelegramTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : 'Lỗi kết nối máy chủ.',
+      });
+    } finally {
+      setTestingTelegram(false);
+    }
   };
 
   return (
@@ -407,6 +470,98 @@ export function CookieSettingsModal({
                 placeholder="auth_token=...; ct0=...; (tự động gắn x-csrf-token từ ct0)"
                 className="w-full min-h-[44px] px-3 py-2 text-xs font-mono bg-slate-900 border border-slate-700 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-400"
               />
+            </div>
+
+            {/* Section 3: Telegram Bot Cloud Media Upload Configuration */}
+            <div className="p-4 rounded-xl bg-slate-950/90 border border-sky-800/60 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <span className="text-xs font-bold text-sky-300 inline-flex items-center gap-1.5">
+                  <Send className="w-3.5 h-3.5 text-sky-400" />
+                  Tự Động Upload Media Lên Telegram (Story & Post)
+                </span>
+                <label className="min-h-[44px] inline-flex items-center gap-2 cursor-pointer text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={telegramEnabled}
+                    onChange={e => setTelegramEnabled(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-sky-500 focus:ring-sky-500"
+                  />
+                  <span>Bật tự động đẩy file sang Telegram</span>
+                </label>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Khi phát hiện Story hoặc Post mới, máy chủ sẽ tự động gửi trực tiếp video/ảnh gốc (tối đa 50MB/file) vào Kênh hoặc Nhóm Telegram của bạn qua Bot API.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label htmlFor="telegram-bot-token" className="block text-[11px] font-semibold text-slate-300">
+                    Telegram Bot Token (@BotFather)
+                  </label>
+                  <input
+                    id="telegram-bot-token"
+                    type={showSecrets ? 'text' : 'password'}
+                    value={telegramBotToken}
+                    onChange={e => setTelegramBotToken(e.target.value)}
+                    placeholder="VD: 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+                    className="w-full min-h-[44px] px-3 py-2 text-xs font-mono bg-slate-900 border border-slate-700 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-sky-400"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label htmlFor="telegram-chat-id" className="block text-[11px] font-semibold text-slate-300">
+                    Telegram Chat ID (Kênh / Nhóm)
+                  </label>
+                  <input
+                    id="telegram-chat-id"
+                    type="text"
+                    value={telegramChatId}
+                    onChange={e => setTelegramChatId(e.target.value)}
+                    placeholder="VD: -1001234567890 hoặc @ten_kenh"
+                    className="w-full min-h-[44px] px-3 py-2 text-xs font-mono bg-slate-900 border border-slate-700 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-sky-400"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <span className="text-[11px] text-slate-400">
+                  Lưu ý: Nhớ thêm Bot vào Kênh/Nhóm với quyền <strong>Administrator</strong>.
+                </span>
+                <button
+                  type="button"
+                  onClick={handleTestTelegram}
+                  disabled={testingTelegram}
+                  className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-sky-200 bg-sky-950/80 hover:bg-sky-900/80 border border-sky-700/70 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {testingTelegram ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Đang kiểm tra...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-3.5 h-3.5" />
+                      Kiểm tra & Lưu kết nối Telegram
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {telegramTestResult && (
+                <div
+                  className={`p-2.5 rounded-lg border text-xs flex items-start gap-2 ${
+                    telegramTestResult.ok
+                      ? 'bg-emerald-950/50 border-emerald-700/70 text-emerald-300'
+                      : 'bg-rose-950/50 border-rose-700/70 text-rose-300'
+                  }`}
+                >
+                  {telegramTestResult.ok ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                  )}
+                  <span>{telegramTestResult.message}</span>
+                </div>
+              )}
             </div>
           </div>
 

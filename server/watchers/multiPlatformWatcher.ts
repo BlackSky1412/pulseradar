@@ -16,8 +16,9 @@ import { XStoryCollector } from './collectors/xStory';
 import { Notifier } from './notifier';
 import { createWatcherStateStore, WatcherStateStore } from './stateStore';
 import { createMediaDownloader, MediaDownloader } from '../mediaDownloader';
+import { resolveTargetStreamMeta } from '../stateStore';
 import type { LivePlatform, PlatformCookies } from '../liveCheckers/types';
-import type { MultiPlatformSettings } from '../../src/utils/scannerEngine';
+import type { MultiPlatformSettings, TargetStreamMeta } from '../../src/utils/scannerEngine';
 import type {
   CollectorFetchResult,
   CollectorHealthRecord,
@@ -56,6 +57,7 @@ export class MultiPlatformWatcher {
   private activeLoops: Promise<void>[] = [];
 
   private diagnosticsMap = new Map<string, TargetCollectorDiagnostic>();
+  private lastLoopRunByPlatform = new Map<string, number>();
   private lastReports: Record<WatcherEventType, WatcherCycleReport | null> = {
     live: null,
     post: null,
@@ -88,6 +90,12 @@ export class MultiPlatformWatcher {
       targetsByPlatform: initialTargets,
       cookies: initialCookies,
       platformSettings: rawCfg.platformSettings,
+      targetStreamMetaMap: rawCfg.targetStreamMetaMap,
+      targetRuleMap: rawCfg.targetRuleMap,
+      manageLiveLoop: rawCfg.manageLiveLoop !== false,
+      liveIntervalSeconds: rawCfg.liveIntervalSeconds,
+      postIntervalSeconds: rawCfg.postIntervalSeconds,
+      storyIntervalSeconds: rawCfg.storyIntervalSeconds,
       enableWarmup: rawCfg.enableWarmup !== false,
       autoDownloadMedia: rawCfg.autoDownloadMedia !== false,
       driveStorageRoot: rawCfg.driveStorageRoot,
@@ -101,7 +109,10 @@ export class MultiPlatformWatcher {
     this.stateStore = options?.stateStore || createWatcherStateStore();
     this.mediaDownloader =
       options?.mediaDownloader ||
-      createMediaDownloader({ storageRoot: this.config.driveStorageRoot });
+      createMediaDownloader({
+        storageRoot: this.config.driveStorageRoot,
+        cookies: initialCookies,
+      });
     this.notifier =
       options?.notifier ||
       new Notifier({
@@ -144,6 +155,10 @@ export class MultiPlatformWatcher {
     return typeof c === 'string' ? c.trim() : '';
   }
 
+  getNotifier(): Notifier {
+    return this.notifier;
+  }
+
   setCookie(platform: LivePlatform, cookie: string): void {
     const val = typeof cookie === 'string' ? cookie.trim() : '';
     if (!this.config.cookies) {
@@ -151,6 +166,7 @@ export class MultiPlatformWatcher {
     }
     const p = platform.toLowerCase() as keyof PlatformCookies;
     this.config.cookies[p] = val;
+    this.mediaDownloader.updateCookies?.({ [p]: val });
     const cols = this.collectors[platform];
     if (cols) {
       for (const col of Object.values(cols)) {
@@ -168,6 +184,7 @@ export class MultiPlatformWatcher {
         }
       }
     }
+    this.mediaDownloader.updateCookies?.(cookies);
   }
 
   setTargetUsers(users: string[]): void {
@@ -185,6 +202,18 @@ export class MultiPlatformWatcher {
       if (targets[p]) {
         this.config.targetsByPlatform[p] = [...(targets[p] || [])];
       }
+    }
+  }
+
+  setTargetStreamConfig(
+    metaMap?: Record<string, TargetStreamMeta>,
+    ruleMap?: Record<string, string>
+  ): void {
+    if (metaMap !== undefined) {
+      this.config.targetStreamMetaMap = metaMap;
+    }
+    if (ruleMap !== undefined) {
+      this.config.targetRuleMap = ruleMap;
     }
   }
 
@@ -207,6 +236,24 @@ export class MultiPlatformWatcher {
         ...partial.platformSettings,
       };
     }
+    if (partial.targetStreamMetaMap !== undefined) {
+      this.config.targetStreamMetaMap = partial.targetStreamMetaMap;
+    }
+    if (partial.targetRuleMap !== undefined) {
+      this.config.targetRuleMap = partial.targetRuleMap;
+    }
+    if (partial.manageLiveLoop !== undefined) {
+      this.config.manageLiveLoop = partial.manageLiveLoop;
+    }
+    if (partial.liveIntervalSeconds !== undefined) {
+      this.config.liveIntervalSeconds = partial.liveIntervalSeconds;
+    }
+    if (partial.postIntervalSeconds !== undefined) {
+      this.config.postIntervalSeconds = partial.postIntervalSeconds;
+    }
+    if (partial.storyIntervalSeconds !== undefined) {
+      this.config.storyIntervalSeconds = partial.storyIntervalSeconds;
+    }
     if (partial.enableWarmup !== undefined) {
       this.config.enableWarmup = partial.enableWarmup;
     }
@@ -224,9 +271,11 @@ export class MultiPlatformWatcher {
     }
     if (partial.webhookUrl !== undefined) {
       this.config.webhookUrl = partial.webhookUrl;
+      this.notifier.updateConfig({ webhookUrl: partial.webhookUrl });
     }
     if (partial.androidCallbackUrl !== undefined) {
       this.config.androidCallbackUrl = partial.androidCallbackUrl;
+      this.notifier.updateConfig({ androidCallbackUrl: partial.androidCallbackUrl });
     }
   }
 
@@ -272,7 +321,10 @@ export class MultiPlatformWatcher {
     return [this];
   }
 
-  async runCycle(eventType: WatcherEventType): Promise<WatcherCycleReport> {
+  async runCycle(
+    eventType: WatcherEventType,
+    options?: { respectPlatformIntervals?: boolean; platforms?: LivePlatform[] }
+  ): Promise<WatcherCycleReport> {
     const startTime = Date.now();
     const report: WatcherCycleReport = {
       eventType,
@@ -285,8 +337,11 @@ export class MultiPlatformWatcher {
     };
 
     const staggerRange = this.config.staggerRangeMs ?? [0, 0];
+    const allowedPlatforms = options?.platforms
+      ? ALL_PLATFORMS.filter((p) => options.platforms!.includes(p))
+      : ALL_PLATFORMS;
 
-    for (const platform of ALL_PLATFORMS) {
+    for (const platform of allowedPlatforms) {
       if (this.stopController?.signal.aborted) break;
 
       if (!this.isEventEnabled(platform, eventType)) {
@@ -296,6 +351,17 @@ export class MultiPlatformWatcher {
       const targets = this.config.targetsByPlatform?.[platform] || [];
       if (targets.length === 0) {
         continue;
+      }
+
+      if (options?.respectPlatformIntervals) {
+        const loopKey = `${platform}::${eventType}`;
+        const lastRunMs = this.lastLoopRunByPlatform.get(loopKey) ?? 0;
+        const intervalMs = this.resolveInterval(eventType, platform) * 1000;
+        const nowMs = Date.now();
+        if (lastRunMs > 0 && nowMs - lastRunMs < intervalMs) {
+          continue;
+        }
+        this.lastLoopRunByPlatform.set(loopKey, nowMs);
       }
 
       const collector = this.collectors[platform]?.[eventType];
@@ -309,6 +375,15 @@ export class MultiPlatformWatcher {
       if (collector.supported === false) {
         for (const target of targets) {
           const username = normalizeUsername(target, platform) || target.replace(/^@+/, '');
+          const ruleId = this.config.targetRuleMap?.[`${platform}::${username.toLowerCase()}`];
+          const meta = resolveTargetStreamMeta(this.config.targetStreamMetaMap, {
+            ruleId,
+            rawTarget: target.trim(),
+            platform,
+            canonicalUsername: username,
+          });
+          if (!meta[eventType]) continue;
+
           report.targetsChecked++;
           this.recordDiagnostic({
             platform,
@@ -324,6 +399,7 @@ export class MultiPlatformWatcher {
         continue;
       }
 
+      let checkedTargetIndex = 0;
       for (let i = 0; i < targets.length; i++) {
         if (this.stopController?.signal.aborted) break;
 
@@ -331,13 +407,25 @@ export class MultiPlatformWatcher {
         const username = normalizeUsername(rawTarget, platform) || rawTarget.replace(/^@+/, '');
         if (!username) continue;
 
+        const ruleId = this.config.targetRuleMap?.[`${platform}::${username.toLowerCase()}`];
+        const meta = resolveTargetStreamMeta(this.config.targetStreamMetaMap, {
+          ruleId,
+          rawTarget: rawTarget.trim(),
+          platform,
+          canonicalUsername: username,
+        });
+        if (!meta[eventType]) {
+          continue;
+        }
+
         report.targetsChecked++;
 
-        if (i > 0 && staggerRange[1] > 0) {
+        if (checkedTargetIndex > 0 && staggerRange[1] > 0) {
           const staggerDelay = randomInRange(staggerRange[0], staggerRange[1]);
           await this.sleepOrAbort(staggerDelay);
           if (this.stopController?.signal.aborted) break;
         }
+        checkedTargetIndex++;
 
         try {
           let diagResult: CollectorFetchResult<WatcherEvent>;
@@ -394,7 +482,12 @@ export class MultiPlatformWatcher {
           const initialized = await this.stateStore.isInitialized(platform, username, eventType);
 
           // Warmup logic: stories must not be suppressed by warmup, posts/live are baseline-suppressed
-          if (!initialized && this.config.enableWarmup !== false && eventType !== 'story') {
+          if (
+            !initialized &&
+            this.config.enableWarmup !== false &&
+            meta.warmup !== false &&
+            eventType !== 'story'
+          ) {
             await this.stateStore.warmupUser(
               platform,
               username,
@@ -416,18 +509,63 @@ export class MultiPlatformWatcher {
           }
 
           await this.stateStore.recordSuccess(collector.name);
-          this.recordDiagnostic({
-            platform,
-            username,
-            eventType,
-            status: 'OK',
-            usedCookie: Boolean(diagResult.usedCookie ?? usedCookie),
-            itemCount: events.length,
-            checkedAt: new Date().toISOString(),
-          });
+          let targetCloudUploadError: string | null = null;
+          let targetDownloadError: string | null = null;
+          let targetNewItemCount = 0;
 
           for (const event of events) {
             event.platform = platform;
+            const alreadySeen = this.stateStore.isSeen
+              ? await this.stateStore.isSeen(platform, username, eventType, event.itemId)
+              : false;
+            if (alreadySeen) {
+              continue;
+            }
+
+            if (
+              (eventType === 'post' || eventType === 'story') &&
+              this.config.autoDownloadMedia !== false
+            ) {
+              let downloadFailed = false;
+              let dlErrorMsg = '';
+              try {
+                const downloadResult = await this.mediaDownloader.downloadEventMedia(event, {
+                  cookie: this.getCookie(platform),
+                });
+                event.metadata = {
+                  ...event.metadata,
+                  downloadedMedia: downloadResult,
+                };
+                if (downloadResult.noMedia) {
+                  if (eventType === 'story') {
+                    downloadFailed = true;
+                    dlErrorMsg = downloadResult.error || 'Story contains no downloadable media';
+                  }
+                } else if (!downloadResult.success || downloadResult.files.length === 0) {
+                  downloadFailed = true;
+                  dlErrorMsg = downloadResult.error || 'Media download failed';
+                } else if (downloadResult.cloudUploadError) {
+                  targetCloudUploadError = downloadResult.cloudUploadError;
+                  report.errors.push({
+                    username: `${platform}:${username}`,
+                    error: `Cloud upload error: ${downloadResult.cloudUploadError}`,
+                  });
+                }
+              } catch (dlErr) {
+                downloadFailed = true;
+                dlErrorMsg = dlErr instanceof Error ? dlErr.message : String(dlErr);
+              }
+
+              if (downloadFailed) {
+                targetDownloadError = dlErrorMsg;
+                report.errors.push({
+                  username: `${platform}:${username}`,
+                  error: dlErrorMsg,
+                });
+                continue;
+              }
+            }
+
             const isNew = await this.stateStore.isNewAndMark(
               platform,
               username,
@@ -437,32 +575,28 @@ export class MultiPlatformWatcher {
             );
 
             if (isNew) {
+              targetNewItemCount++;
               report.newEventsFound++;
-
-              if (
-                (eventType === 'post' || eventType === 'story') &&
-                this.config.autoDownloadMedia !== false
-              ) {
-                try {
-                  const downloadResult = await this.mediaDownloader.downloadEventMedia(event);
-                  event.metadata = {
-                    ...event.metadata,
-                    downloadedMedia: downloadResult,
-                  };
-                } catch (dlErr) {
-                  console.warn(
-                    `[MultiPlatformWatcher] Failed to download media for ${platform}:${username} ${eventType} ${event.itemId}:`,
-                    dlErr
-                  );
-                }
-              }
-
               const notifResult = await this.notifier.notify(event);
               if (notifResult.status === 'delivered') {
                 report.notificationsDispatched++;
               }
             }
           }
+
+          this.recordDiagnostic({
+            platform,
+            username,
+            eventType,
+            status: targetDownloadError ? 'ERROR' : 'OK',
+            reason:
+              targetDownloadError ||
+              (targetCloudUploadError ? `Cloud upload error: ${targetCloudUploadError}` : undefined),
+            usedCookie: Boolean(diagResult.usedCookie ?? usedCookie),
+            itemCount: events.length,
+            newItemCount: targetNewItemCount,
+            checkedAt: new Date().toISOString(),
+          });
         } catch (targetErr) {
           const errMsg = targetErr instanceof Error ? targetErr.message : String(targetErr);
           this.recordDiagnostic({
@@ -507,7 +641,8 @@ export class MultiPlatformWatcher {
     this.isRunningState = true;
     this.stopController = new AbortController();
 
-    const eventTypes: WatcherEventType[] = ['live', 'post', 'story'];
+    const eventTypes: WatcherEventType[] =
+      this.config.manageLiveLoop === false ? ['post', 'story'] : ['live', 'post', 'story'];
     this.activeLoops = eventTypes.map((eventType) =>
       this.runPeriodicLoop(eventType, this.stopController!.signal)
     );
@@ -525,7 +660,7 @@ export class MultiPlatformWatcher {
   private async runPeriodicLoop(eventType: WatcherEventType, signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       try {
-        await this.runCycle(eventType);
+        await this.runCycle(eventType, { respectPlatformIntervals: true });
       } catch (err) {
         console.error(`[MultiPlatformWatcher] Cycle unhandled error (${eventType}):`, err);
       }
@@ -537,23 +672,72 @@ export class MultiPlatformWatcher {
     }
   }
 
-  private resolveInterval(eventType: WatcherEventType): number {
+  resolveInterval(eventType: WatcherEventType, platform?: LivePlatform): number {
     const defaults = { live: 60, post: 240, story: 360 };
+    const intervalField =
+      eventType === 'live'
+        ? 'liveIntervalSeconds'
+        : eventType === 'post'
+        ? 'postIntervalSeconds'
+        : 'storyIntervalSeconds';
+
+    const readPlatformInterval = (p: LivePlatform): number | null => {
+      const pKey = p.toLowerCase() as keyof MultiPlatformSettings;
+      const pCfg = this.config.platformSettings?.[pKey];
+      const val = pCfg?.[intervalField];
+      return typeof val === 'number' && Number.isFinite(val) && val >= 5 ? val : null;
+    };
+
+    if (platform) {
+      const val = readPlatformInterval(platform);
+      if (val !== null) return val;
+    } else if (this.config.platformSettings) {
+      const enabledWithTargets: number[] = [];
+      const enabledAll: number[] = [];
+      for (const p of ALL_PLATFORMS) {
+        if (!this.isEventEnabled(p, eventType)) continue;
+        const val = readPlatformInterval(p);
+        if (val !== null) {
+          enabledAll.push(val);
+          if ((this.config.targetsByPlatform?.[p]?.length ?? 0) > 0) {
+            enabledWithTargets.push(val);
+          }
+        }
+      }
+      const candidates = enabledWithTargets.length > 0 ? enabledWithTargets : enabledAll;
+      if (candidates.length > 0) {
+        return Math.min(...candidates);
+      }
+    }
+
+    const topVal = this.config[intervalField];
+    if (typeof topVal === 'number' && Number.isFinite(topVal) && topVal >= 5) {
+      return topVal;
+    }
     return defaults[eventType] ?? 120;
   }
 
   private async sleepOrAbort(ms: number): Promise<void> {
     if (ms <= 0) return;
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms);
-      this.stopController?.signal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        { once: true }
-      );
+      const signal = this.stopController?.signal;
+      if (signal?.aborted) {
+        resolve();
+        return;
+      }
+
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const onAbort = () => {
+        if (timer !== null) clearTimeout(timer);
+        resolve();
+      };
+
+      timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 }

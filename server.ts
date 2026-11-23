@@ -13,6 +13,8 @@ import {
   parseSourceMeta,
   isLiveUserTarget,
   resolveLivePlatformForTarget,
+  type KeywordRuleItem,
+  type WebhookServerItem,
   type SocialPlatform,
   type LivePlatform,
   type MatchType,
@@ -20,11 +22,7 @@ import {
   type SocialPostCandidate,
   type ActivityEventType,
   type LiveTargetScanStatus,
-  type MultiPlatformSettings,
-  type PlatformTrackingConfig,
-  type ScannerSettingsState,
-  createDefaultMultiPlatformSettings,
-  normalizeMultiPlatformSettings,
+  type TargetStreamMeta,
 } from './src/utils/scannerEngine';
 import {
   checkBatchLive,
@@ -35,8 +33,6 @@ import {
 } from './server/liveCheckers/index';
 import {
   createStateStore,
-  createDefaultWorkspaceState,
-  normalizeTargetProfiles,
   type AndroidState,
   type StateStore,
   type WorkspaceState,
@@ -56,9 +52,9 @@ import {
 } from './server/watchers/multiPlatformWatcher';
 import { instagramUserIdCache } from './server/watchers/collectors/instagramShared';
 import { Notifier } from './server/watchers/notifier';
-import { resolveDriveStorageRoot } from './server/mediaDownloader';
+import { createMediaDownloader, resolveDriveStorageRoot } from './server/mediaDownloader';
 import { createStorageManager } from './server/storage/index';
-import type { PendingDeviceNotification } from './server/watchers/types';
+import type { PendingDeviceNotification, WatcherEvent } from './server/watchers/types';
 import {
   createAndroidClient,
   type AndroidClient,
@@ -447,54 +443,6 @@ async function dispatchWebhookHttp(params: {
   }
 }
 
-const RETRYABLE_FS_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
-const RENAME_RETRY_DELAYS_MS = [20, 40, 80, 160, 320];
-
-function sleepFs(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-  const payload = JSON.stringify(data, null, 2);
-
-  try {
-    await fs.promises.writeFile(tmpPath, payload, 'utf-8');
-    let attempt = 0;
-    while (true) {
-      try {
-        await fs.promises.rename(tmpPath, filePath);
-        return;
-      } catch (err) {
-        const code = (err as { code?: string } | null)?.code;
-        if (code && RETRYABLE_FS_CODES.has(code) && attempt < RENAME_RETRY_DELAYS_MS.length) {
-          await sleepFs(RENAME_RETRY_DELAYS_MS[attempt]);
-          attempt += 1;
-          continue;
-        }
-        throw err;
-      }
-    }
-  } catch (err) {
-    await fs.promises.unlink(tmpPath).catch(() => {});
-    throw err;
-  }
-}
-
-async function readJsonFileIfExists(filePath: string): Promise<unknown | null> {
-  try {
-    const raw = await fs.promises.readFile(filePath, 'utf-8');
-    return JSON.parse(raw);
-  } catch (err) {
-    const code = (err as { code?: string } | null)?.code;
-    if (code === 'ENOENT') {
-      return null;
-    }
-    throw err;
-  }
-}
-
 export async function createApp(options: CreateAppOptions = {}): Promise<CreatedApp> {
   const app = express();
   app.use((_req, res, next) => {
@@ -505,146 +453,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
   app.use(express.json({ limit: '1mb' }));
 
   const dataDir = options.dataDir ?? path.resolve(__dirname, 'data');
-  const baseStateStore = createStateStore(dataDir);
-  const workspaceQueues = new Map<string, Promise<unknown>>();
-  function enqueueWorkspace<T>(task: () => Promise<T>): Promise<T> {
-    const key = baseStateStore.workspaceFile;
-    const prev = workspaceQueues.get(key) ?? Promise.resolve();
-    const next = prev.catch(() => {}).then(task);
-    const tracked = next.catch(() => {});
-    workspaceQueues.set(key, tracked);
-    tracked.finally(() => {
-      if (workspaceQueues.get(key) === tracked) {
-        workspaceQueues.delete(key);
-      }
-    });
-    return next;
-  }
-
-  const stateStore: StateStore = {
-    ...baseStateStore,
-    async readWorkspaceState(): Promise<any> {
-      const state = await baseStateStore.readWorkspaceState();
-      const raw = await readJsonFileIfExists(baseStateStore.workspaceFile);
-      const rawObj = (raw && typeof raw === 'object' ? raw : {}) as {
-        scannerSettings?: { platforms?: unknown };
-        platforms?: unknown;
-      };
-      const incomingPlatforms =
-        rawObj.scannerSettings?.platforms ?? rawObj.platforms;
-      const platforms = normalizeMultiPlatformSettings(
-        incomingPlatforms as Partial<MultiPlatformSettings> | undefined
-      );
-      return {
-        ...state,
-        scannerSettings: {
-          ...state.scannerSettings,
-          platforms,
-        },
-      };
-    },
-    async readWorkspaceStateIfExists(): Promise<any> {
-      const state = await baseStateStore.readWorkspaceStateIfExists();
-      if (!state) return null;
-      const raw = await readJsonFileIfExists(baseStateStore.workspaceFile);
-      const rawObj = (raw && typeof raw === 'object' ? raw : {}) as {
-        scannerSettings?: { platforms?: unknown };
-        platforms?: unknown;
-      };
-      const incomingPlatforms =
-        rawObj.scannerSettings?.platforms ?? rawObj.platforms;
-      const platforms = normalizeMultiPlatformSettings(
-        incomingPlatforms as Partial<MultiPlatformSettings> | undefined
-      );
-      return {
-        ...state,
-        scannerSettings: {
-          ...state.scannerSettings,
-          platforms,
-        },
-      };
-    },
-    async writeWorkspaceState(partialOrFull: any): Promise<any> {
-      return enqueueWorkspace(async () => {
-        const rawExisting = await readJsonFileIfExists(baseStateStore.workspaceFile);
-        const existing =
-          rawExisting && typeof rawExisting === 'object' && !Array.isArray(rawExisting)
-            ? (rawExisting as Record<string, any>)
-            : {};
-
-        const baseDef = createDefaultWorkspaceState();
-        const existingRules = Array.isArray(existing.rules) ? existing.rules : baseDef.rules;
-        const existingServers = Array.isArray(existing.servers) ? existing.servers : baseDef.servers;
-        const existingAlerts = Array.isArray(existing.alerts) ? existing.alerts : baseDef.alerts;
-        const existingSettings =
-          existing.scannerSettings && typeof existing.scannerSettings === 'object'
-            ? existing.scannerSettings
-            : baseDef.scannerSettings;
-
-        const incomingSettings = partialOrFull?.scannerSettings;
-        const poll = incomingSettings?.pollIntervalSeconds;
-
-        const incomingPlatforms =
-          incomingSettings?.platforms ?? partialOrFull?.platforms;
-        const existingPlatforms =
-          existingSettings?.platforms ?? existing?.platforms;
-
-        const platforms = normalizeMultiPlatformSettings(
-          (incomingPlatforms !== undefined ? incomingPlatforms : existingPlatforms) as Partial<MultiPlatformSettings> | undefined
-        );
-        const existingTargetProfiles = normalizeTargetProfiles(existing.targetProfiles);
-
-        const next: WorkspaceState & { scannerSettings: ScannerSettingsState & { platforms: MultiPlatformSettings } } = {
-          rules: Array.isArray(partialOrFull?.rules) ? partialOrFull.rules : existingRules,
-          servers: Array.isArray(partialOrFull?.servers) ? partialOrFull.servers : existingServers,
-          alerts: Array.isArray(partialOrFull?.alerts) ? partialOrFull.alerts : existingAlerts,
-          scannerSettings: {
-            cookies: {
-              tiktok:
-                typeof incomingSettings?.cookies?.tiktok === 'string'
-                  ? incomingSettings.cookies.tiktok
-                  : existingSettings.cookies?.tiktok ?? '',
-              instagram:
-                typeof incomingSettings?.cookies?.instagram === 'string'
-                  ? incomingSettings.cookies.instagram
-                  : existingSettings.cookies?.instagram ?? '',
-              facebook:
-                typeof incomingSettings?.cookies?.facebook === 'string'
-                  ? incomingSettings.cookies.facebook
-                  : existingSettings.cookies?.facebook ?? '',
-              x:
-                typeof incomingSettings?.cookies?.x === 'string'
-                  ? incomingSettings.cookies.x
-                  : existingSettings.cookies?.x ?? '',
-            },
-            pollIntervalSeconds:
-              typeof poll === 'number' && Number.isFinite(poll) && poll >= 10
-                ? poll
-                : existingSettings.pollIntervalSeconds ?? 30,
-            deduplicateLive:
-              typeof incomingSettings?.deduplicateLive === 'boolean'
-                ? incomingSettings.deduplicateLive
-                : existingSettings.deduplicateLive ?? true,
-            platforms,
-          },
-          targetProfiles: normalizeTargetProfiles(
-            partialOrFull?.targetProfiles,
-            existingTargetProfiles
-          ),
-          updatedAt: new Date().toISOString(),
-        };
-
-        await atomicWriteJson(baseStateStore.workspaceFile, next);
-        return next;
-      });
-    },
-    async flush(): Promise<void> {
-      await baseStateStore.flush();
-      while (workspaceQueues.size > 0) {
-        await Promise.allSettled(Array.from(workspaceQueues.values()));
-      }
-    },
-  };
+  const stateStore: StateStore = createStateStore(dataDir);
 
   const watcherStateStore =
     options.watcherStateStore ??
@@ -659,71 +468,194 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
       ? options.commandTtlMs
       : 30 * 60 * 1000;
 
+  // Instance-scoped state (never shared across tests/app instances)
+  const sandboxReceipts: SandboxWebhookReceipt[] = [];
+  const activeLiveSessionMap = new Map<string, string>();
+  let listeningPort = resolveEnvPort();
+  let viteServer: ViteDevServer | null = null;
+  let latestWorkspaceRules: KeywordRuleItem[] = [];
+  let latestWorkspaceServers: WebhookServerItem[] = [];
+
+  const defaultEnvCookies: Required<PlatformCookies> = {
+    tiktok: normalizeCookieValue(options.envCookies?.tiktok ?? process.env.TIKTOK_COOKIE ?? process.env.TIKTOK_SESSION_ID),
+    instagram: normalizeCookieValue(options.envCookies?.instagram ?? process.env.INSTAGRAM_COOKIE ?? process.env.INSTAGRAM_SESSION_ID),
+    facebook: normalizeCookieValue(options.envCookies?.facebook ?? process.env.FACEBOOK_COOKIE),
+    x: normalizeCookieValue(options.envCookies?.x ?? process.env.X_COOKIE ?? process.env.TWITTER_COOKIE),
+  };
+
+  function createWebhookTargetResolver(
+    getRules: () => KeywordRuleItem[],
+    getServers: () => WebhookServerItem[]
+  ) {
+    return (event: WatcherEvent) => {
+      const targetPlatform = String(event.platform || 'TIKTOK').toUpperCase() as LivePlatform;
+      const targetUser =
+        canonicalizeUsername(event.username || '', targetPlatform) ||
+        String(event.username || '').replace(/^@+/, '').toLowerCase();
+      const serverById = new Map<string, WebhookServerItem>();
+      for (const srv of getServers()) {
+        if (srv && srv.id) serverById.set(srv.id, srv);
+      }
+      let fallbackRule: KeywordRuleItem | null = null;
+      for (const rule of getRules()) {
+        if (!rule || !rule.enabled) continue;
+        const users = extractAuthoritativeUsers([rule], {});
+        const platformUsers = users.filter(u => u.platform === targetPlatform);
+        if (platformUsers.length === 0) continue;
+        if (platformUsers.some(u => u.username.toLowerCase() === targetUser)) {
+          const srv = serverById.get(rule.webhookServerId);
+          if (srv && srv.enabled && srv.url?.trim()) {
+            return {
+              url: srv.url.trim(),
+              format: srv.format,
+              secretHeader: srv.secretHeader,
+              ruleId: rule.id,
+              matchType: rule.matchType,
+            };
+          }
+          return null;
+        }
+        if (!fallbackRule) fallbackRule = rule;
+      }
+      if (fallbackRule) {
+        const srv = serverById.get(fallbackRule.webhookServerId);
+        if (srv && srv.enabled && srv.url?.trim()) {
+          return {
+            url: srv.url.trim(),
+            format: srv.format,
+            secretHeader: srv.secretHeader,
+            ruleId: fallbackRule.id,
+            matchType: fallbackRule.matchType,
+          };
+        }
+      }
+      return null;
+    };
+  }
+
+  async function pushPendingAndroidNotification(notif: PendingDeviceNotification): Promise<void> {
+    await stateStore.updateAndroidState(st => {
+      if (!Array.isArray(st.pendingNotifications)) {
+        st.pendingNotifications = [];
+      }
+      st.pendingNotifications.push(notif);
+      if (st.pendingNotifications.length > 100) {
+        st.pendingNotifications = st.pendingNotifications.slice(-100);
+      }
+    });
+  }
+
+  const watcherMediaDownloader = createMediaDownloader({
+    storageRoot: driveStorageRoot,
+    cookies: { ...defaultEnvCookies },
+  });
+
+  const watcherNotifier = new Notifier({
+    localBaseUrl: `http://127.0.0.1:${listeningPort}`,
+    resolveWebhookTarget: createWebhookTargetResolver(
+      () => latestWorkspaceRules,
+      () => latestWorkspaceServers
+    ),
+    onPendingNotification: pushPendingAndroidNotification,
+  });
+
   const watcher =
     options.watcher ??
     new MultiPlatformWatcher({
       config: {
         targetsByPlatform: { TIKTOK: [], INSTAGRAM: [], FACEBOOK: [], X: [] },
-        cookies: {
-          tiktok: normalizeCookieValue(options.envCookies?.tiktok ?? process.env.TIKTOK_COOKIE ?? process.env.TIKTOK_SESSION_ID),
-          instagram: normalizeCookieValue(options.envCookies?.instagram ?? process.env.INSTAGRAM_COOKIE ?? process.env.INSTAGRAM_SESSION_ID),
-          facebook: normalizeCookieValue(options.envCookies?.facebook ?? process.env.FACEBOOK_COOKIE),
-          x: normalizeCookieValue(options.envCookies?.x ?? process.env.X_COOKIE ?? process.env.TWITTER_COOKIE),
-        },
+        cookies: { ...defaultEnvCookies },
         enableWarmup: true,
         autoDownloadMedia: true,
         driveStorageRoot,
       },
       stateStore: watcherStateStore,
-      notifier: new Notifier({
-        onPendingNotification: async notif => {
-          await stateStore.updateAndroidState(st => {
-            if (!Array.isArray(st.pendingNotifications)) {
-              st.pendingNotifications = [];
-            }
-            st.pendingNotifications.push(notif);
-            if (st.pendingNotifications.length > 100) {
-              st.pendingNotifications = st.pendingNotifications.slice(-100);
-            }
-          });
-        },
-      }),
+      mediaDownloader: watcherMediaDownloader,
+      notifier: watcherNotifier,
     });
+
+  function syncNotifierConfig(
+    rules: KeywordRuleItem[],
+    servers: WebhookServerItem[],
+    androidCallbackUrl?: string | null
+  ): void {
+    latestWorkspaceRules = Array.isArray(rules) ? [...rules] : [];
+    latestWorkspaceServers = Array.isArray(servers) ? [...servers] : [];
+    const firstEnabledServer = latestWorkspaceServers.find(
+      s => s && s.enabled && typeof s.url === 'string' && s.url.trim()
+    );
+    watcherNotifier.updateConfig({
+      webhookUrl: firstEnabledServer?.url?.trim() || undefined,
+      webhookFormat: firstEnabledServer?.format,
+      secretHeader: firstEnabledServer?.secretHeader,
+      ...(androidCallbackUrl !== undefined
+        ? { androidCallbackUrl: androidCallbackUrl || undefined }
+        : {}),
+    });
+    if (!options.watcher && androidCallbackUrl !== undefined) {
+      watcher.updateConfig({ androidCallbackUrl: androidCallbackUrl || undefined } as any);
+    }
+  }
+
+  function syncWatcherTargetsFromState(
+    rules: KeywordRuleItem[],
+    targetStreamMetaMap?: Record<string, TargetStreamMeta>
+  ): void {
+    const authoritative = extractAuthoritativeUsers(rules, {});
+    const targetsByPlatform: Record<LivePlatform, string[]> = {
+      TIKTOK: [],
+      INSTAGRAM: [],
+      FACEBOOK: [],
+      X: [],
+    };
+    for (const u of authoritative) {
+      if (u.isEnabled && targetsByPlatform[u.platform as LivePlatform]) {
+        targetsByPlatform[u.platform as LivePlatform].push(u.username);
+      }
+    }
+    if (typeof (watcher as any).setTargetsByPlatform === 'function') {
+      (watcher as any).setTargetsByPlatform(targetsByPlatform);
+    }
+    watcher.setTargetUsers?.(targetsByPlatform.TIKTOK);
+
+    const targetRuleMap: Record<string, string> = {};
+    for (const rule of rules) {
+      if (!rule || !rule.enabled) continue;
+      const users = extractAuthoritativeUsers([rule], {});
+      for (const u of users) {
+        const key = `${u.platform}::${u.username.toLowerCase()}`;
+        if (!targetRuleMap[key]) {
+          targetRuleMap[key] = rule.id;
+        }
+      }
+    }
+    if (typeof (watcher as any).setTargetStreamConfig === 'function') {
+      (watcher as any).setTargetStreamConfig(targetStreamMetaMap, targetRuleMap);
+    }
+  }
 
   // Synchronize initial target users and watcher configuration from workspace state
   try {
-    const initialState = await stateStore.readWorkspaceStateIfExists();
+    const [initialState, initialAndroid] = await Promise.all([
+      stateStore.readWorkspaceStateIfExists(),
+      stateStore.readAndroidState().catch(() => null),
+    ]);
+    syncNotifierConfig(
+      initialState?.rules ?? [],
+      initialState?.servers ?? [],
+      initialAndroid?.device?.callbackUrl ?? undefined
+    );
     if (initialState?.rules) {
-      const authoritative = extractAuthoritativeUsers(initialState.rules, {});
-      const targetsByPlatform: Record<LivePlatform, string[]> = {
-        TIKTOK: [],
-        INSTAGRAM: [],
-        FACEBOOK: [],
-        X: [],
-      };
-      for (const u of authoritative) {
-        if (u.isEnabled && targetsByPlatform[u.platform as LivePlatform]) {
-          targetsByPlatform[u.platform as LivePlatform].push(u.username);
-        }
-      }
-      if (typeof (watcher as any).setTargetsByPlatform === 'function') {
-        (watcher as any).setTargetsByPlatform(targetsByPlatform);
-      }
-      const tikTokUsers = targetsByPlatform.TIKTOK;
-      watcher.setTargetUsers?.(tikTokUsers);
+      syncWatcherTargetsFromState(initialState.rules, initialState.targetStreamMetaMap);
+    } else if (initialState?.targetStreamMetaMap && typeof (watcher as any).setTargetStreamConfig === 'function') {
+      (watcher as any).setTargetStreamConfig(initialState.targetStreamMetaMap, {});
     }
-    const defaultEnvCookies = {
-      tiktok: normalizeCookieValue(options.envCookies?.tiktok ?? process.env.TIKTOK_COOKIE ?? process.env.TIKTOK_SESSION_ID),
-      instagram: normalizeCookieValue(options.envCookies?.instagram ?? process.env.INSTAGRAM_COOKIE ?? process.env.INSTAGRAM_SESSION_ID),
-      facebook: normalizeCookieValue(options.envCookies?.facebook ?? process.env.FACEBOOK_COOKIE),
-      x: normalizeCookieValue(options.envCookies?.x ?? process.env.X_COOKIE ?? process.env.TWITTER_COOKIE),
-    };
-    const wsCookies = initialState?.scannerSettings?.cookies || {};
-    const mergedCookies = {
-      tiktok: (wsCookies.tiktok !== undefined ? wsCookies.tiktok : (defaultEnvCookies.tiktok ?? '')).trim(),
-      instagram: (wsCookies.instagram !== undefined ? wsCookies.instagram : (defaultEnvCookies.instagram ?? '')).trim(),
-      facebook: (wsCookies.facebook !== undefined ? wsCookies.facebook : (defaultEnvCookies.facebook ?? '')).trim(),
-      x: (wsCookies.x !== undefined ? wsCookies.x : (defaultEnvCookies.x ?? '')).trim(),
+    const wsCookies: Partial<PlatformCookies> = initialState?.scannerSettings?.cookies ?? {};
+    const mergedCookies: Required<PlatformCookies> = {
+      tiktok: normalizeCookieValue(wsCookies.tiktok) || defaultEnvCookies.tiktok,
+      instagram: normalizeCookieValue(wsCookies.instagram) || defaultEnvCookies.instagram,
+      facebook: normalizeCookieValue(wsCookies.facebook) || defaultEnvCookies.facebook,
+      x: normalizeCookieValue(wsCookies.x) || defaultEnvCookies.x,
     };
     if (mergedCookies.tiktok || mergedCookies.instagram || mergedCookies.facebook || mergedCookies.x || initialState?.scannerSettings?.cookies) {
       if (typeof (watcher as any).updateCookies === 'function') {
@@ -734,7 +666,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         cookies: mergedCookies,
       } as any);
     }
-    const platformsCfg = (initialState?.scannerSettings as any)?.platforms;
+    const platformsCfg = initialState?.scannerSettings?.platforms;
     if (platformsCfg) {
       watcher.updateConfig({
         platformSettings: platformsCfg,
@@ -742,6 +674,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         postIntervalSeconds: platformsCfg.tiktok?.postIntervalSeconds,
         storyIntervalSeconds: platformsCfg.tiktok?.storyIntervalSeconds,
       } as any);
+    }
+    const teleCfg = initialState?.scannerSettings?.telegram;
+    if (teleCfg) {
+      watcherMediaDownloader
+        .getStorageManager()
+        .getTelegramService()
+        .updateConfig({
+          botToken: teleCfg.botToken,
+          chatId: teleCfg.chatId,
+          enabled: teleCfg.enabled,
+        });
     }
     if (initialState?.targetProfiles) {
       for (const [key, profile] of Object.entries(initialState.targetProfiles)) {
@@ -766,12 +709,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
     liveCheckBatchFn: options.liveCheckBatchFn,
     envCookies: options.envCookies,
   });
-
-  // Instance-scoped state (never shared across tests/app instances)
-  const sandboxReceipts: SandboxWebhookReceipt[] = [];
-  const activeLiveSessionMap = new Map<string, string>();
-  let listeningPort = resolveEnvPort();
-  let viteServer: ViteDevServer | null = null;
 
   // 0. Health & Introspection (Contract 4)
   app.get('/api/health', async (_req, res) => {
@@ -871,6 +808,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           lastSyncAt: existing?.lastSyncAt ?? null,
         };
       });
+
+      watcherNotifier.updateConfig({ androidCallbackUrl: callbackUrl });
+      if (!options.watcher) {
+        watcher.updateConfig({ androidCallbackUrl: callbackUrl } as any);
+      }
 
       res.status(200).json({
         ok: true,
@@ -1136,6 +1078,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         }
       });
 
+      const clientSupportsNotifAck =
+        req.body.supportsNotificationAck === true ||
+        Array.isArray(req.body.ackedNotificationIds);
+
       const ws = await stateStore.readWorkspaceState();
       const authoritativeUsers = extractAuthoritativeUsers(
         ws.rules,
@@ -1146,11 +1092,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         nowMs,
       });
 
+      if (updatedAndroidState.device?.callbackUrl) {
+        watcherNotifier.updateConfig({ androidCallbackUrl: updatedAndroidState.device.callbackUrl });
+        if (!options.watcher) {
+          watcher.updateConfig({ androidCallbackUrl: updatedAndroidState.device.callbackUrl } as any);
+        }
+      }
+
       let deliveredNotifications: PendingDeviceNotification[] = [];
       await stateStore.updateAndroidState(draft => {
+        pruneExpiredByTtl(draft, nowMs, commandTtlMs);
         if (Array.isArray(draft.pendingNotifications) && draft.pendingNotifications.length > 0) {
-          deliveredNotifications = [...draft.pendingNotifications];
-          draft.pendingNotifications = [];
+          deliveredNotifications = draft.pendingNotifications.map(n => ({ ...n }));
+          if (!clientSupportsNotifAck) {
+            draft.pendingNotifications = [];
+          }
         }
       });
 
@@ -1526,8 +1482,120 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
   // 0d-3b. Multi-Cloud Storage Status (Google Drive API & Telegram)
   app.get('/api/storage/status', (_req, res) => {
     try {
-      const storageManager = createStorageManager();
+      const storageManager = watcherMediaDownloader.getStorageManager();
       res.json({ ok: true, status: storageManager.getStatus() });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // 0d-3c. Test Telegram Bot Connection & Optional Save
+  app.post('/api/storage/telegram/test', async (req, res) => {
+    try {
+      const body = isPlainObject(req.body) ? req.body : {};
+      const botToken = typeof body.botToken === 'string' ? body.botToken.trim() : undefined;
+      const chatId = typeof body.chatId === 'string' ? body.chatId.trim() : undefined;
+      const saveIfOk = body.save === true;
+
+      const telegramService = watcherMediaDownloader.getStorageManager().getTelegramService();
+      const testRes = await telegramService.testConnection({ botToken, chatId });
+
+      if (testRes.ok && saveIfOk && botToken && chatId) {
+        telegramService.updateConfig({ botToken, chatId, enabled: true });
+        const existingWs = await stateStore.readWorkspaceState();
+        await stateStore.writeWorkspaceState({
+          ...existingWs,
+          scannerSettings: {
+            ...existingWs.scannerSettings,
+            telegram: {
+              botToken,
+              chatId,
+              enabled: true,
+            },
+          },
+        });
+      }
+
+      res.json({
+        ...testRes,
+        status: watcherMediaDownloader.getStorageManager().getStatus(),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // 0d-3d. Manual Push Downloaded Local File to Cloud (Telegram / Google Drive)
+  app.post('/api/media/push-cloud', async (req, res) => {
+    try {
+      const body = isPlainObject(req.body) ? req.body : {};
+      const rawUsername = typeof body.username === 'string' ? body.username.trim() : '';
+      const rawType = typeof body.eventType === 'string' ? body.eventType.trim() : '';
+      const rawFileName = typeof body.fileName === 'string' ? body.fileName.trim() : '';
+
+      if (!rawUsername || !rawType || !rawFileName) {
+        res.status(400).json({ ok: false, error: 'Missing username, eventType, or fileName' });
+        return;
+      }
+
+      const rootDir = resolveDriveStorageRoot();
+      const safeUser = path.basename(rawUsername);
+      const safeType = path.basename(rawType);
+      const safeFile = path.basename(rawFileName);
+      const targetPath = path.join(rootDir, safeUser, safeType, safeFile);
+
+      if (!fs.existsSync(targetPath)) {
+        res.status(404).json({ ok: false, error: 'File not found on server disk' });
+        return;
+      }
+
+      const stat = fs.statSync(targetPath);
+      const lower = safeFile.toLowerCase();
+      const mimeType = lower.endsWith('.mp4')
+        ? 'video/mp4'
+        : lower.endsWith('.png')
+        ? 'image/png'
+        : lower.endsWith('.webp')
+        ? 'image/webp'
+        : 'image/jpeg';
+      const platform: LivePlatform = lower.startsWith('instagram_')
+        ? 'INSTAGRAM'
+        : lower.startsWith('facebook_')
+        ? 'FACEBOOK'
+        : lower.startsWith('x_')
+        ? 'X'
+        : 'TIKTOK';
+      const normEventType = safeType === 'stories' || safeType === 'story' ? 'story' : 'post';
+
+      const storageManager = watcherMediaDownloader.getStorageManager();
+      const uploadResult = await storageManager.uploadMedia({
+        platform,
+        localFilePath: targetPath,
+        fileName: safeFile,
+        fileSize: stat.size,
+        mimeType,
+        username: safeUser,
+        eventType: normEventType,
+        title: `${normEventType.toUpperCase()} từ @${safeUser} (${safeFile})`,
+      });
+
+      const failedProviders = uploadResult.results.filter(
+        r => !r.success && r.provider !== 'local'
+      );
+      const anyCloudSuccess = uploadResult.results.some(
+        r => (r.provider === 'telegram' || r.provider === 'google_drive') && r.success
+      );
+
+      res.json({
+        ok: anyCloudSuccess,
+        uploadResult,
+        error:
+          failedProviders.length > 0
+            ? failedProviders.map(f => `${f.provider}: ${f.error}`).join('; ')
+            : !anyCloudSuccess
+            ? 'Chưa cấu hình Telegram Bot hoặc Google Drive API.'
+            : undefined,
+      });
     } catch (err) {
       res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
@@ -1598,41 +1666,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         res.status(400).json({ ok: false, error: 'Invalid workspace state targetProfiles map' });
         return;
       }
+      if (body.targetStreamMetaMap !== undefined && !isPlainObject(body.targetStreamMetaMap)) {
+        res.status(400).json({ ok: false, error: 'Invalid workspace state targetStreamMetaMap map' });
+        return;
+      }
 
       const state = await stateStore.writeWorkspaceState(body);
 
-      // Update watcher targets and configuration from saved workspace state
+      // Update watcher targets, notifier servers, and configuration from saved workspace state
+      syncNotifierConfig(state.rules ?? [], state.servers ?? []);
       if (Array.isArray(state.rules)) {
-        const authoritative = extractAuthoritativeUsers(state.rules, {});
-        const targetsByPlatform: Record<LivePlatform, string[]> = {
-          TIKTOK: [],
-          INSTAGRAM: [],
-          FACEBOOK: [],
-          X: [],
-        };
-        for (const u of authoritative) {
-          if (u.isEnabled && targetsByPlatform[u.platform as LivePlatform]) {
-            targetsByPlatform[u.platform as LivePlatform].push(u.username);
-          }
-        }
-        if (typeof (watcher as any).setTargetsByPlatform === 'function') {
-          (watcher as any).setTargetsByPlatform(targetsByPlatform);
-        }
-        const tikTokUsers = targetsByPlatform.TIKTOK;
-        watcher.setTargetUsers?.(tikTokUsers);
+        syncWatcherTargetsFromState(state.rules, state.targetStreamMetaMap);
+      } else if (state.targetStreamMetaMap && typeof (watcher as any).setTargetStreamConfig === 'function') {
+        (watcher as any).setTargetStreamConfig(state.targetStreamMetaMap, {});
       }
-      const defaultEnvCookies = {
-        tiktok: normalizeCookieValue(options.envCookies?.tiktok ?? process.env.TIKTOK_COOKIE ?? process.env.TIKTOK_SESSION_ID),
-        instagram: normalizeCookieValue(options.envCookies?.instagram ?? process.env.INSTAGRAM_COOKIE ?? process.env.INSTAGRAM_SESSION_ID),
-        facebook: normalizeCookieValue(options.envCookies?.facebook ?? process.env.FACEBOOK_COOKIE),
-        x: normalizeCookieValue(options.envCookies?.x ?? process.env.X_COOKIE ?? process.env.TWITTER_COOKIE),
-      };
-      const wsCookies = state.scannerSettings?.cookies || {};
-      const mergedCookies = {
-        tiktok: (wsCookies.tiktok !== undefined ? wsCookies.tiktok : (defaultEnvCookies.tiktok ?? '')).trim(),
-        instagram: (wsCookies.instagram !== undefined ? wsCookies.instagram : (defaultEnvCookies.instagram ?? '')).trim(),
-        facebook: (wsCookies.facebook !== undefined ? wsCookies.facebook : (defaultEnvCookies.facebook ?? '')).trim(),
-        x: (wsCookies.x !== undefined ? wsCookies.x : (defaultEnvCookies.x ?? '')).trim(),
+      const wsCookies: Partial<PlatformCookies> = state.scannerSettings?.cookies ?? {};
+      const mergedCookies: Required<PlatformCookies> = {
+        tiktok: normalizeCookieValue(wsCookies.tiktok) || defaultEnvCookies.tiktok,
+        instagram: normalizeCookieValue(wsCookies.instagram) || defaultEnvCookies.instagram,
+        facebook: normalizeCookieValue(wsCookies.facebook) || defaultEnvCookies.facebook,
+        x: normalizeCookieValue(wsCookies.x) || defaultEnvCookies.x,
       };
       if (mergedCookies.tiktok || mergedCookies.instagram || mergedCookies.facebook || mergedCookies.x || state.scannerSettings?.cookies) {
         if (typeof (watcher as any).updateCookies === 'function') {
@@ -1643,7 +1696,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           cookies: mergedCookies,
         } as any);
       }
-      const platformsCfg = (state.scannerSettings as any)?.platforms;
+      const platformsCfg = state.scannerSettings?.platforms;
       if (platformsCfg) {
         watcher.updateConfig({
           platformSettings: platformsCfg,
@@ -1651,6 +1704,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           postIntervalSeconds: platformsCfg.tiktok?.postIntervalSeconds,
           storyIntervalSeconds: platformsCfg.tiktok?.storyIntervalSeconds,
         } as any);
+      }
+      const teleCfg = state.scannerSettings?.telegram;
+      if (teleCfg) {
+        watcherMediaDownloader
+          .getStorageManager()
+          .getTelegramService()
+          .updateConfig({
+            botToken: teleCfg.botToken,
+            chatId: teleCfg.chatId,
+            enabled: teleCfg.enabled,
+          });
       }
       if (state.targetProfiles) {
         for (const [key, profile] of Object.entries(state.targetProfiles)) {
@@ -1902,6 +1966,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
         specificTargets,
         customSampleText = '',
         simulatedActivityType,
+        activityType,
         isAutoScan = false,
         deduplicateLive = true,
       } = req.body || {};
@@ -1957,7 +2022,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           allQueriedSources.add(`${sourceDomain} (Simulator)`);
 
           const actType: ActivityEventType =
-            simulatedActivityType === 'live' || simulatedActivityType === 'post'
+            simulatedActivityType === 'live' ||
+            simulatedActivityType === 'post' ||
+            simulatedActivityType === 'story'
               ? simulatedActivityType
               : trimmedSample.toLowerCase().includes('live')
               ? 'live'
@@ -2059,6 +2126,153 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
           liveSourcesQueried: Array.from(allQueriedSources),
           liveStatuses,
           detections,
+        });
+        return;
+      }
+
+      // Branch C: REAL Post / Story Collector Scan via MultiPlatformWatcher
+      if (activityType === 'post' || activityType === 'story') {
+        const specificTargetFilter =
+          Array.isArray(specificTargets) && specificTargets.length > 0
+            ? new Set(specificTargets.map(t => String(t).trim()))
+            : null;
+        const scopedTargetsByPlatform: Record<LivePlatform, string[]> = {
+          TIKTOK: [],
+          INSTAGRAM: [],
+          FACEBOOK: [],
+          X: [],
+        };
+        const scopedRuleMap: Record<string, string> = {};
+        const scopedPlatformSet = new Set<LivePlatform>();
+
+        for (const rule of activeRules) {
+          const platforms = String(rule.platforms || 'reddit')
+            .split(',')
+            .map(p => p.trim().toLowerCase() as SocialPlatform)
+            .filter(Boolean);
+          const primaryPlatform = platforms[0] || 'reddit';
+          const { sourceDomain } = parseSourceMeta(
+            String(rule.excludedKeywords || ''),
+            primaryPlatform
+          );
+          allQueriedSources.add(sourceDomain);
+
+          const parsedTargets = parseTrackedTargets(String(rule.keyword || ''));
+          for (const t of parsedTargets) {
+            if (specificTargetFilter && !specificTargetFilter.has(t)) continue;
+            if (!isLiveUserTarget(t)) continue;
+            const livePlatform = resolveLivePlatformForTarget(t, primaryPlatform, sourceDomain);
+            const canonicalUser = canonicalizeUsername(t, livePlatform);
+            if (!canonicalUser) continue;
+            scopedPlatformSet.add(livePlatform);
+            if (!scopedTargetsByPlatform[livePlatform].includes(canonicalUser)) {
+              scopedTargetsByPlatform[livePlatform].push(canonicalUser);
+            }
+            const rKey = `${livePlatform}::${canonicalUser.toLowerCase()}`;
+            if (!scopedRuleMap[rKey]) {
+              scopedRuleMap[rKey] = rule.id;
+            }
+          }
+        }
+
+        const scopedPlatforms = Array.from(scopedPlatformSet);
+        const [wsSnapshot, androidSnapshot] = await Promise.all([
+          stateStore.readWorkspaceStateIfExists().catch(() => null),
+          stateStore.readAndroidState().catch(() => null),
+        ]);
+        const wsCookies: Partial<PlatformCookies> = wsSnapshot?.scannerSettings?.cookies ?? {};
+        const scopedCookies: Required<PlatformCookies> = {
+          tiktok:
+            normalizeCookieValue(safeCookies.tiktok) ||
+            normalizeCookieValue(wsCookies.tiktok) ||
+            defaultEnvCookies.tiktok,
+          instagram:
+            normalizeCookieValue(safeCookies.instagram) ||
+            normalizeCookieValue(wsCookies.instagram) ||
+            defaultEnvCookies.instagram,
+          facebook:
+            normalizeCookieValue(safeCookies.facebook) ||
+            normalizeCookieValue(wsCookies.facebook) ||
+            defaultEnvCookies.facebook,
+          x:
+            normalizeCookieValue(safeCookies.x) ||
+            normalizeCookieValue(wsCookies.x) ||
+            defaultEnvCookies.x,
+        };
+
+        const scopedServers: WebhookServerItem[] =
+          Array.isArray(servers) && servers.length > 0
+            ? servers
+            : wsSnapshot?.servers ?? latestWorkspaceServers;
+        const firstEnabledServer = scopedServers.find(
+          s => s && s.enabled && typeof s.url === 'string' && s.url.trim()
+        );
+        const scopedAndroidCallbackUrl = androidSnapshot?.device?.callbackUrl ?? undefined;
+
+        const scopedNotifier = new Notifier({
+          localBaseUrl: `http://127.0.0.1:${listeningPort}`,
+          webhookUrl: firstEnabledServer?.url?.trim() || undefined,
+          webhookFormat: firstEnabledServer?.format,
+          secretHeader: firstEnabledServer?.secretHeader,
+          androidCallbackUrl: scopedAndroidCallbackUrl,
+          resolveWebhookTarget: createWebhookTargetResolver(
+            () => activeRules,
+            () => scopedServers
+          ),
+          onPendingNotification: pushPendingAndroidNotification,
+        });
+
+        const scopedPlatformsCfg = wsSnapshot?.scannerSettings?.platforms;
+        const baseWatcherCfg = (watcher as any).config as
+          | {
+              enableWarmup?: boolean;
+              autoDownloadMedia?: boolean;
+              staggerRangeMs?: [number, number];
+            }
+          | undefined;
+
+        const scopedWatcher = new MultiPlatformWatcher({
+          config: {
+            targetsByPlatform: scopedTargetsByPlatform,
+            cookies: scopedCookies,
+            platformSettings: scopedPlatformsCfg,
+            targetStreamMetaMap: wsSnapshot?.targetStreamMetaMap,
+            targetRuleMap: scopedRuleMap,
+            manageLiveLoop: false,
+            enableWarmup: baseWatcherCfg?.enableWarmup ?? true,
+            autoDownloadMedia: baseWatcherCfg?.autoDownloadMedia ?? true,
+            driveStorageRoot,
+            staggerRangeMs: baseWatcherCfg?.staggerRangeMs ?? [1000, 3000],
+            androidCallbackUrl: scopedAndroidCallbackUrl,
+            ...(scopedPlatformsCfg?.tiktok
+              ? {
+                  liveIntervalSeconds: scopedPlatformsCfg.tiktok.liveIntervalSeconds,
+                  postIntervalSeconds: scopedPlatformsCfg.tiktok.postIntervalSeconds,
+                  storyIntervalSeconds: scopedPlatformsCfg.tiktok.storyIntervalSeconds,
+                }
+              : {}),
+          },
+          stateStore: watcherStateStore,
+          mediaDownloader: watcherMediaDownloader,
+          notifier: scopedNotifier,
+        });
+
+        const report = await scopedWatcher.runCycle(activityType, {
+          platforms: scopedPlatforms.length > 0 ? scopedPlatforms : undefined,
+        });
+        const diagnostics = scopedWatcher.getDiagnostics();
+
+        res.json({
+          ok: true,
+          mode: activityType,
+          scannedAt: new Date().toISOString(),
+          totalRulesEvaluated: activeRules.length,
+          totalPostsScanned: report.targetsChecked,
+          liveSourcesQueried: Array.from(allQueriedSources),
+          liveStatuses: [],
+          detections,
+          diagnostics,
+          report,
         });
         return;
       }
@@ -2311,6 +2525,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
     watcherStateStore,
     setListeningPort(port: number) {
       listeningPort = port;
+      watcherNotifier.updateConfig({ localBaseUrl: `http://127.0.0.1:${port}` });
     },
     getListeningPort() {
       return listeningPort;
@@ -2359,8 +2574,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   }
 
   const shouldStartWatcher =
-    options.startWatcher ?? (process.env.WATCHER_ENABLED === 'true');
+    options.startWatcher ?? (process.env.WATCHER_ENABLED !== 'false');
   if (shouldStartWatcher) {
+    if (shouldStartAutoScanner && typeof (created.watcher as any).updateConfig === 'function') {
+      (created.watcher as any).updateConfig({ manageLiveLoop: false });
+    }
     created.watcher.start();
   }
 
