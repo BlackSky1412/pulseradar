@@ -7,7 +7,7 @@ import type {
 } from './types';
 
 const TELEGRAM_API_BASE = (
-  process.env.TELEGRAM_API_BASE || 'https://telegram-bot-api-z088.onrender.com'
+  process.env.TELEGRAM_API_BASE || 'https://api.telegram.org'
 ).replace(/\/+$/, '');
 
 async function fetchWithFallback(path: string, init?: RequestInit): Promise<Response> {
