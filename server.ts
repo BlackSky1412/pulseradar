@@ -1601,6 +1601,79 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
     }
   });
 
+  // 0d-3e. Sync All Downloaded Local Media to Telegram
+  app.post('/api/media/sync-all-telegram', async (_req, res) => {
+    try {
+      const storageManager = watcherMediaDownloader.getStorageManager();
+      if (!storageManager.getTelegramService().isConfigured()) {
+        res.status(400).json({ ok: false, error: 'Telegram chưa được cấu hình.' });
+        return;
+      }
+      const rootDir = resolveDriveStorageRoot();
+      const files: Array<{ username: string; eventType: string; fileName: string }> = [];
+      if (fs.existsSync(rootDir)) {
+        for (const user of fs.readdirSync(rootDir)) {
+          const userDir = path.join(rootDir, user);
+          if (!fs.statSync(userDir).isDirectory()) continue;
+          for (const type of fs.readdirSync(userDir)) {
+            const typeDir = path.join(userDir, type);
+            if (!fs.statSync(typeDir).isDirectory()) continue;
+            for (const file of fs.readdirSync(typeDir)) {
+              const filePath = path.join(typeDir, file);
+              if (fs.statSync(filePath).isFile()) {
+                files.push({ username: user, eventType: type, fileName: file });
+              }
+            }
+          }
+        }
+      }
+
+      res.json({ ok: true, totalQueued: files.length });
+
+      (async () => {
+        for (const item of files) {
+          try {
+            const filePath = path.join(rootDir, item.username, item.eventType, item.fileName);
+            if (!fs.existsSync(filePath)) continue;
+            const stat = fs.statSync(filePath);
+            const lower = item.fileName.toLowerCase();
+            const mimeType = lower.endsWith('.mp4')
+              ? 'video/mp4'
+              : lower.endsWith('.png')
+              ? 'image/png'
+              : lower.endsWith('.webp')
+              ? 'image/webp'
+              : 'image/jpeg';
+            const platform: LivePlatform = lower.startsWith('instagram_')
+              ? 'INSTAGRAM'
+              : lower.startsWith('facebook_')
+              ? 'FACEBOOK'
+              : lower.startsWith('x_')
+              ? 'X'
+              : 'TIKTOK';
+            const normEventType =
+              item.eventType === 'stories' || item.eventType === 'story' ? 'story' : 'post';
+            await storageManager.uploadMedia({
+              platform,
+              localFilePath: filePath,
+              fileName: item.fileName,
+              fileSize: stat.size,
+              mimeType,
+              username: item.username,
+              eventType: normEventType,
+              title: `${normEventType.toUpperCase()} từ @${item.username} (${item.fileName})`,
+            });
+            await new Promise(r => setTimeout(r, 1000));
+          } catch (e) {
+            console.warn(`[SyncTelegram] Error uploading ${item.fileName}:`, e);
+          }
+        }
+      })().catch(() => {});
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // 0d-4. Security Device Whitelist Management
   app.get('/api/security/device-whitelist', async (_req, res) => {
     try {

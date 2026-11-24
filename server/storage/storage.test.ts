@@ -196,7 +196,7 @@ test('StorageManager: uploads to mock Google Drive and Telegram concurrently', a
       if (urlStr.includes('googleapis.com/drive/v3/files')) {
         return origFetch(`${baseUrl}/drive/v3/files?${urlStr.split('?')[1] || ''}`, init);
       }
-      if (urlStr.includes('api.telegram.org')) {
+      if (urlStr.includes('api.telegram.org') || urlStr.includes('telegram-bot-api') || urlStr.includes('telegram')) {
         const action = urlStr.split('/').pop() || 'sendVideo';
         return origFetch(`${baseUrl}/${action}`, init);
       }
