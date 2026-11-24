@@ -10,6 +10,24 @@ const TELEGRAM_API_BASE = (
   process.env.TELEGRAM_API_BASE || 'https://telegram-bot-api-z088.onrender.com'
 ).replace(/\/+$/, '');
 
+async function fetchWithFallback(path: string, init?: RequestInit): Promise<Response> {
+  const primaryUrl = `${TELEGRAM_API_BASE}${path}`;
+  try {
+    const res = await fetch(primaryUrl, init);
+    if (res.status === 429 && TELEGRAM_API_BASE !== 'https://api.telegram.org') {
+      const fallbackUrl = `https://api.telegram.org${path}`;
+      return await fetch(fallbackUrl, init);
+    }
+    return res;
+  } catch (err) {
+    if (TELEGRAM_API_BASE !== 'https://api.telegram.org') {
+      const fallbackUrl = `https://api.telegram.org${path}`;
+      return await fetch(fallbackUrl, init);
+    }
+    throw err;
+  }
+}
+
 export function escapeTelegramHtml(input: string): string {
   return input
     .replace(/&/g, '&amp;')
@@ -117,7 +135,7 @@ export class TelegramService {
 
     try {
       const timeoutMs = this.config.timeoutMs ?? 60_000;
-      const getMeResp = await fetch(`${TELEGRAM_API_BASE}/bot${token}/getMe`, {
+      const getMeResp = await fetchWithFallback(`/bot${token}/getMe`, {
         method: 'GET',
         signal: AbortSignal.timeout(Math.min(15_000, timeoutMs)),
       });
@@ -133,7 +151,7 @@ export class TelegramService {
       }
 
       const botUsername = getMeJson.result?.username || getMeJson.result?.first_name;
-      const sendResp = await fetch(`${TELEGRAM_API_BASE}/bot${token}/sendMessage`, {
+      const sendResp = await fetchWithFallback(`/bot${token}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -281,9 +299,8 @@ export class TelegramService {
       });
       formData.append(fileField, blob, params.fileName);
 
-      const apiUrl = `${TELEGRAM_API_BASE}/bot${this.config.botToken}/${endpoint}`;
       const timeoutMs = this.config.timeoutMs ?? 60_000;
-      const resp = await fetch(apiUrl, {
+      const resp = await fetchWithFallback(`/bot${this.config.botToken}/${endpoint}`, {
         method: 'POST',
         body: formData,
         signal: AbortSignal.timeout(timeoutMs),
