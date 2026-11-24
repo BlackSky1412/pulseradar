@@ -1653,7 +1653,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
               : 'TIKTOK';
             const normEventType =
               item.eventType === 'stories' || item.eventType === 'story' ? 'story' : 'post';
-            await storageManager.uploadMedia({
+            const upResult = await storageManager.uploadMedia({
               platform,
               localFilePath: filePath,
               fileName: item.fileName,
@@ -1663,7 +1663,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Created
               eventType: normEventType,
               title: `${normEventType.toUpperCase()} từ @${item.username} (${item.fileName})`,
             });
-            await new Promise(r => setTimeout(r, 1000));
+            if (upResult.telegramLink && fs.existsSync(filePath)) {
+              try {
+                fs.unlinkSync(filePath);
+                const typeDir = path.dirname(filePath);
+                if (fs.existsSync(typeDir) && fs.readdirSync(typeDir).length === 0) {
+                  fs.rmdirSync(typeDir);
+                  const userDir = path.dirname(typeDir);
+                  if (fs.existsSync(userDir) && fs.readdirSync(userDir).length === 0) {
+                    fs.rmdirSync(userDir);
+                  }
+                }
+              } catch {}
+            }
+            await new Promise(r => setTimeout(r, 800));
           } catch (e) {
             console.warn(`[SyncTelegram] Error uploading ${item.fileName}:`, e);
           }

@@ -27,7 +27,7 @@ export class StorageManager {
     this.localStorageRoot = options?.localStorageRoot || process.cwd();
     this.cleanupLocalAfterCloudUpload =
       options?.cleanupLocalAfterCloudUpload ??
-      process.env.STORAGE_CLEANUP_LOCAL === 'true';
+      process.env.STORAGE_CLEANUP_LOCAL !== 'false';
   }
 
   getGoogleDriveService(): GoogleDriveService {
