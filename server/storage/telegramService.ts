@@ -40,8 +40,8 @@ export class TelegramService {
   private lastError: string | null = null;
 
   constructor(config?: Partial<TelegramConfig>) {
-    const defaultBotToken = '8990931808:AAG97rb0uy963CoAiUkf5q3t0b50TWT5eCk';
-    const defaultChatId = '-1003897845541';
+    const defaultBotToken = '9292676716:AAHiG5DbxPdum82przstp8QuANMf-7MmMU8';
+    const defaultChatId = '-1004484723209';
 
     const envToken = process.env.TELEGRAM_BOT_TOKEN?.trim() || defaultBotToken;
     const envChatId = process.env.TELEGRAM_CHAT_ID?.trim() || defaultChatId;
